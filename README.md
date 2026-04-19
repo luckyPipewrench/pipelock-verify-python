@@ -154,6 +154,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
+Maintainers: see [RELEASING.md](RELEASING.md) for the OIDC-based publish flow.
+
 To refresh the conformance fixtures from a local Pipelock checkout:
 
 ```bash

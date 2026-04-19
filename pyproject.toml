@@ -47,6 +47,12 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.8",
 ]
+release = [
+    "build>=1.0",
+    "twine>=6.0",
+    "setuptools>=64",
+    "wheel",
+]
 
 [project.urls]
 Homepage = "https://pipelab.org"

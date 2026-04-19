@@ -30,6 +30,27 @@ jobs:
           version="${GH_REF#refs/tags/v}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure tag matches pyproject version
+        env:
+          TAG_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tomllib
+          import os
+          import sys
+
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          project_version = data["project"]["version"]
+          tag_version = os.environ["TAG_VERSION"]
+          if project_version != tag_version:
+              print(
+                  f"pyproject.toml version {project_version!r} does not match tag v{tag_version}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          PY
+
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
