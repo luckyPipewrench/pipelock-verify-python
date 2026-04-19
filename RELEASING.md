@@ -25,10 +25,12 @@ gh repo create luckyPipewrench/pipelock-verify-python \
    - Environment: `pypi`
 4. Confirm the version in `pyproject.toml` matches the release tag you plan to
    push. The GitHub Actions release workflow enforces this.
-5. Create the first tag and push it:
+5. Create the first **signed, annotated** tag and push it. The release-tags
+   ruleset rejects unsigned tags, so use `-a -s` (or rely on `tag.gpgsign = true`
+   in your git config):
 
 ```bash
-git tag v0.1.0
+git tag -a -s v0.1.0 -m "pipelock-verify 0.1.0"
 git push origin main --tags
 ```
 
@@ -57,10 +59,11 @@ python -m build
 twine check dist/*
 ```
 
-4. Commit the version bump, then tag the same version:
+4. Commit the version bump, then create a **signed, annotated** tag for the
+   same version:
 
 ```bash
-git tag vX.Y.Z
+git tag -a -s vX.Y.Z -m "pipelock-verify X.Y.Z"
 git push origin main --tags
 ```
 

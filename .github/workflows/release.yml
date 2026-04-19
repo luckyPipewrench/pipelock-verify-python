@@ -76,6 +76,10 @@ jobs:
       url: https://pypi.org/p/pipelock-verify
     permissions:
       id-token: write
+      # attestations: write is required for SLSA / Sigstore provenance
+      # attachments on the published distributions (PEP 740).
+      attestations: write
+      contents: read
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -83,5 +87,11 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI with attestations
         uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          # Emit SLSA / Sigstore attestations for each uploaded artifact
+          # via the OIDC trusted publisher flow. Published alongside the
+          # sdist and wheel so downstream consumers can verify provenance
+          # with `gh attestation verify --owner luckyPipewrench`.
+          attestations: true
