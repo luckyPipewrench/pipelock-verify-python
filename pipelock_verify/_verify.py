@@ -64,17 +64,34 @@ _RFC3339_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+
 def _is_valid_rfc3339(value: Any) -> bool:
     """Return True if value parses as an RFC 3339 timestamp Go would accept.
 
-    Python's datetime.fromisoformat accepts the ``Z`` suffix natively only
-    on 3.11+, so we substitute it with ``+00:00`` before parsing to support
-    3.9 and 3.10 as well.
+    Go's ``time.RFC3339Nano`` allows up to 9 fractional digits (nanoseconds).
+    Python's ``datetime.fromisoformat`` tops out at microsecond precision
+    (6 fractional digits) and the ``Z`` suffix only parses natively on 3.11+.
+    We handle both differences here so valid Go timestamps verify on 3.9-3.13.
     """
     if not isinstance(value, str):
         return False
     if not _RFC3339_RE.match(value):
         return False
     candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+    # Truncate fractional seconds to 6 digits so fromisoformat accepts
+    # Go's nanosecond timestamps on Python 3.9/3.10. The regex above has
+    # already validated the overall shape, so we know there is at most one
+    # ``.`` before the timezone offset.
+    match = re.match(
+        r"^(?P<prefix>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+        r"(?:\.(?P<frac>\d{1,9}))?"
+        r"(?P<offset>[+-]\d{2}:\d{2})$",
+        candidate,
+    )
+    if match is None:
+        return False
+    prefix = match.group("prefix")
+    frac = match.group("frac") or ""
+    offset = match.group("offset")
+    truncated = f"{prefix}.{frac[:6]}{offset}" if frac else f"{prefix}{offset}"
     try:
-        datetime.fromisoformat(candidate)
+        datetime.fromisoformat(truncated)
     except ValueError:
         return False
     return True
