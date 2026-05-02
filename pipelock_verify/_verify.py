@@ -472,6 +472,23 @@ def _verify_chain_list(
     if not receipts:
         return ChainResult(valid=True, receipt_count=0)
 
+    # v2 chain verification is a v0.3 follow-up. v0.2.0 surfaces v2
+    # envelopes via verify_evidence() one at a time. If a chain contains
+    # any v2 receipt we fail closed rather than silently treating it as
+    # v1, which would falsely fail every v2 chain. Mixed v1/v2 chains
+    # are blocked for the same reason: chain-hash bridging across v1
+    # and v2 record types is not yet specified.
+    for i, receipt in enumerate(receipts):
+        if receipt.get("record_type") == "evidence_receipt_v2":
+            return ChainResult(
+                valid=False,
+                broken_at_seq=i,
+                error=(
+                    "v2 chain verification not yet implemented in v0.2.0; "
+                    "verify v2 receipts individually with verify_evidence()"
+                ),
+            )
+
     # When no key is pinned, lock to the first receipt's signer_key so an
     # attacker can't splice receipts from a second signer into the chain.
     expected_key = public_key_hex or receipts[0].get("signer_key", "")

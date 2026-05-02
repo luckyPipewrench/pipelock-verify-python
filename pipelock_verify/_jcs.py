@@ -111,14 +111,22 @@ def parse_json_strict(data: bytes | str) -> Any:
         JCSError: On duplicate keys, trailing tokens, or float values.
     """
     if isinstance(data, bytes):
-        data = data.decode("utf-8")
+        try:
+            data = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise JCSError(f"JSON parse error: {exc}") from exc
 
-    # Use object_pairs_hook to detect duplicate keys.
+    # Use object_pairs_hook to detect duplicate keys. raw_decode does
+    # not skip leading whitespace on its own, so strip it ourselves and
+    # carry the offset forward for the trailing-token check.
     decoder = json.JSONDecoder(object_pairs_hook=_check_duplicate_keys)
+    stripped = data.lstrip()
+    ws_prefix = len(data) - len(stripped)
     try:
-        value, idx = decoder.raw_decode(data)
+        value, idx = decoder.raw_decode(stripped)
     except json.JSONDecodeError as exc:
         raise JCSError(f"JSON parse error: {exc}") from exc
+    idx += ws_prefix
 
     # Check for trailing non-whitespace.
     remaining = data[idx:].strip()

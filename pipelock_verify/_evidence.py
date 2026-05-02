@@ -377,27 +377,35 @@ def verify_evidence(
     if err:
         return EvidenceVerifyResult(valid=False, error=err)
 
-    # Compute signable preimage: JCS(receipt_without_signature).
-    if public_key_hex:
-        try:
-            pub_key_bytes = bytes.fromhex(public_key_hex)
-        except ValueError as exc:
-            return EvidenceVerifyResult(valid=False, error=f"decoding public_key: {exc}")
-        if len(pub_key_bytes) != _PUBLIC_KEY_LEN:
-            return EvidenceVerifyResult(
-                valid=False,
-                error=f"invalid public_key length: got {len(pub_key_bytes)}, want {_PUBLIC_KEY_LEN}",
-            )
+    # Fail closed when no verification key is provided. v2 envelopes do
+    # not embed a signer public key, so callers MUST supply one. Accepting
+    # a structurally-valid receipt without verifying its signature would
+    # let an attacker pass any envelope through verify_evidence().
+    if not public_key_hex:
+        return EvidenceVerifyResult(
+            valid=False,
+            error="public_key_hex is required to verify EvidenceReceipt v2 signatures",
+        )
 
-        try:
-            preimage = _signable_preimage(receipt)
-        except (JCSError, InvalidReceiptError) as exc:
-            return EvidenceVerifyResult(valid=False, error=f"computing preimage: {exc}")
+    try:
+        pub_key_bytes = bytes.fromhex(public_key_hex)
+    except ValueError as exc:
+        return EvidenceVerifyResult(valid=False, error=f"decoding public_key: {exc}")
+    if len(pub_key_bytes) != _PUBLIC_KEY_LEN:
+        return EvidenceVerifyResult(
+            valid=False,
+            error=f"invalid public_key length: got {len(pub_key_bytes)}, want {_PUBLIC_KEY_LEN}",
+        )
 
-        try:
-            Ed25519PublicKey.from_public_bytes(pub_key_bytes).verify(sig_bytes, preimage)
-        except InvalidSignature:
-            return EvidenceVerifyResult(valid=False, error="signature verification failed")
+    try:
+        preimage = _signable_preimage(receipt)
+    except (JCSError, InvalidReceiptError) as exc:
+        return EvidenceVerifyResult(valid=False, error=f"computing preimage: {exc}")
+
+    try:
+        Ed25519PublicKey.from_public_bytes(pub_key_bytes).verify(sig_bytes, preimage)
+    except InvalidSignature:
+        return EvidenceVerifyResult(valid=False, error="signature verification failed")
 
     return EvidenceVerifyResult(
         valid=True,
@@ -465,16 +473,37 @@ def _validate_payload(payload_kind: str, payload: Any) -> str | None:
     return validator(payload)
 
 
+# Fields documented as integer / uint counts in the Go reference. A string
+# carrying "5" must NOT pass validation because the Go side parses these as
+# typed integers and the JCS preimage byte-shape differs (`5` vs `"5"`).
+# Cross-implementation drift bug surface: keep this list in sync with
+# internal/contract/receipt/payload.go field types in pipelock.
+_INT_FIELDS: frozenset[str] = frozenset(
+    {
+        "current_generation",
+        "target_generation",
+        "lossless_count",
+        "delta_sample_count",
+    }
+)
+
+
 def _check_fields(
     payload: dict[str, Any],
     schema: dict[str, bool],
     context: str = "",
 ) -> str | None:
-    """Check for unknown fields and required fields.
+    """Check for unknown fields, required fields, and basic field types.
 
     schema maps field_name -> required. Unknown fields are rejected.
     Required string fields must be non-empty. Required list/dict fields
-    must be non-empty.
+    must be non-empty. Fields named in ``_INT_FIELDS`` must arrive as
+    Python ``int`` (not str), because the Go reference emits them as
+    typed integers and the JCS preimage byte-shape differs.
+
+    NOTE: for v0.2.0 the type guard is limited to integer-shaped count
+    fields. Full per-field type schemas (string vs list-of-string vs
+    nested object shape) are tracked as a v0.3 follow-up.
     """
     known = set(schema.keys())
     unknown = set(payload.keys()) - known
@@ -483,9 +512,15 @@ def _check_fields(
         return f"{prefix}unknown payload fields: {sorted(unknown)}"
 
     for field, required in schema.items():
+        value = payload.get(field)
+        if field in _INT_FIELDS and value is not None and not isinstance(value, int):
+            # Reject bool too: bool is a subclass of int in Python so
+            # isinstance(True, int) is True, but bool in a count slot is
+            # a typing bug. None is allowed — handled by required-check.
+            if isinstance(value, bool) or not isinstance(value, int):
+                return f"payload field {field!r} must be an integer, got {type(value).__name__}"
         if not required:
             continue
-        value = payload.get(field)
         if value is None:
             return f"payload missing required field: {field}"
         if isinstance(value, str) and value == "":

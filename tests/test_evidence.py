@@ -427,12 +427,18 @@ class TestSignatureVerification:
         assert not result.valid
         assert "signature verification failed" in (result.error or "")
 
-    def test_no_key_skips_signature_check(self):
-        """Without a public key, only structural checks are performed."""
+    def test_no_key_fails_closed(self):
+        """Without a public key, verification fails closed.
+
+        v2 envelopes do not embed a signer public key. Accepting a
+        structurally-valid receipt without verifying its signature would
+        let an attacker pass any envelope through verify_evidence(),
+        which is why the constructor now requires public_key_hex.
+        """
         receipt = _minimal_evidence_receipt()
-        # Signature is dummy zeros — structural checks pass, no crypto check.
         result = verify_evidence(receipt)
-        assert result.valid, result.error
+        assert not result.valid
+        assert "public_key_hex is required" in (result.error or "")
 
 
 # ---- Key purpose enforcement ----
@@ -653,8 +659,10 @@ class TestSignablePreimage:
         receipt = _minimal_evidence_receipt()
         preimage = _signable_preimage(receipt)
         decoded_str = preimage.decode("utf-8")
-        # JCS means no whitespace between tokens.
-        assert " " not in decoded_str or '"actor":"agent:test"' in decoded_str
+        # JCS means no whitespace between tokens, period.
+        assert " " not in decoded_str
+        assert "\n" not in decoded_str
+        assert "\t" not in decoded_str
         # Verify it re-parses without error.
         parsed = json.loads(decoded_str)
         assert isinstance(parsed, dict)

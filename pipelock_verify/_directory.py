@@ -93,6 +93,14 @@ def fetch_directory(
         DirectoryFetchError: On network error, non-200 response, or
             malformed JSON.
     """
+    # Restrict to HTTP(S) so a caller-controlled scheme cannot reach
+    # urllib's file:// handler and read arbitrary local files. The
+    # host check rejects path separators that would let a caller
+    # smuggle path components into the host slot.
+    if scheme.lower() not in {"https", "http"}:
+        raise DirectoryFetchError(f"unsupported URL scheme: {scheme!r}")
+    if "/" in host or "\\" in host:
+        raise DirectoryFetchError("host must not contain path separators")
     url = f"{scheme}://{host}{WELL_KNOWN_PATH}"
     req = urllib.request.Request(url, method="GET")
 
