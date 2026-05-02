@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pipelock-verify"
-version = "0.1.1"
-description = "Verify Pipelock action receipts (Ed25519-signed, chain-linked)."
+version = "0.2.0"
+description = "Verify Pipelock receipts: ActionReceipt v1 and EvidenceReceipt v2 (Ed25519-signed, chain-linked)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
@@ -32,6 +32,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Security",
     "Topic :: Security :: Cryptography",
     "Topic :: Software Development :: Libraries :: Python Modules",

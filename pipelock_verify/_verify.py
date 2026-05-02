@@ -178,6 +178,32 @@ def verify(
             valid=False, error="flight-recorder entry does not carry an action receipt"
         )
 
+    # Version routing: dispatch on record_type field.
+    record_type = receipt.get("record_type")
+    if record_type == "evidence_receipt_v2":
+        from ._evidence import verify_evidence as _verify_v2
+
+        v2_result = _verify_v2(receipt, public_key_hex=public_key_hex)
+        # Wrap EvidenceVerifyResult into a VerifyResult for backward compat.
+        return VerifyResult(
+            valid=v2_result.valid,
+            error=v2_result.error,
+            action_id=v2_result.event_id,
+            action_type=v2_result.payload_kind,
+            verdict=None,
+            target=None,
+            transport=None,
+            signer_key=v2_result.signer_key_id,
+            chain_seq=v2_result.chain_seq,
+            chain_prev_hash=v2_result.chain_prev_hash,
+            timestamp=v2_result.timestamp,
+        )
+    if record_type is not None and record_type not in ("action_receipt_v1", None):
+        return VerifyResult(
+            valid=False,
+            error=f"unknown record_type: {record_type!r}",
+        )
+
     return _verify_receipt_dict(receipt, public_key_hex)
 
 
@@ -263,8 +289,12 @@ def _extract_receipt(parsed: dict[str, Any]) -> dict[str, Any] | None:
             f"flight-recorder detail has unexpected type {type(detail).__name__}"
         )
 
-    # Bare receipt.
+    # Bare v1 receipt (ActionReceipt).
     if "action_record" in parsed and "signature" in parsed:
+        return parsed
+
+    # Bare v2 receipt (EvidenceReceipt): identified by record_type field.
+    if "record_type" in parsed and "payload" in parsed:
         return parsed
 
     raise InvalidReceiptError("unrecognized JSONL line: not a receipt or flight-recorder entry")
