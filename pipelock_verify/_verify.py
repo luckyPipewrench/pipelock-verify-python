@@ -47,6 +47,7 @@ _VALID_ACTION_TYPES = frozenset(
     }
 )
 
+
 @dataclass
 class VerifyResult:
     """Outcome of verifying a single receipt.

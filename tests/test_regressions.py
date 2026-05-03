@@ -335,9 +335,7 @@ def test_v2_in_chain_fail_closed_uses_declared_chain_seq(tmp_path):
 
     result = pipelock_verify.verify_chain(f)
     assert not result.valid
-    assert result.broken_at_seq == 42, (
-        f"want chain_seq=42 (declared), got {result.broken_at_seq}"
-    )
+    assert result.broken_at_seq == 42, f"want chain_seq=42 (declared), got {result.broken_at_seq}"
 
 
 def test_v2_in_chain_fallback_to_index_when_chain_seq_missing(tmp_path):

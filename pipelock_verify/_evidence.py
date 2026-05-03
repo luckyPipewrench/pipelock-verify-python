@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -650,7 +651,7 @@ def _validate_contract_redaction_request(payload: dict[str, Any]) -> str | None:
     return None
 
 
-_PAYLOAD_VALIDATORS: dict[str, Any] = {
+_PAYLOAD_VALIDATORS: dict[str, Callable[[dict[str, Any]], str | None]] = {
     "proxy_decision": _validate_proxy_decision,
     "contract_ratified": _validate_contract_ratified,
     "contract_promote_intent": _validate_contract_promote_intent,
