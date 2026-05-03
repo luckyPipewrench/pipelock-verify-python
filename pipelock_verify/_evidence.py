@@ -15,8 +15,8 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from ._common import InvalidReceiptError, _is_valid_rfc3339
 from ._jcs import JCSError, canonicalize, parse_json_strict
-from ._verify import InvalidReceiptError, _is_valid_rfc3339
 
 # Wire format constants matching internal/contract/receipt/receipt.go.
 _RECORD_TYPE_EVIDENCE_V2 = "evidence_receipt_v2"
