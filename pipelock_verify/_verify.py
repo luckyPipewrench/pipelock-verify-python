@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +12,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from ._canonical import canonicalize_action_record, canonicalize_receipt
+from ._common import InvalidReceiptError as InvalidReceiptError
+from ._common import _is_valid_rfc3339 as _is_valid_rfc3339
 
 # Wire format constants — keep in sync with internal/receipt/receipt.go.
 _RECEIPT_VERSION = 1
@@ -46,59 +46,6 @@ _VALID_ACTION_TYPES = frozenset(
         "unclassified",
     }
 )
-
-# RFC 3339 / time.RFC3339Nano shape check. Go's time.Time.UnmarshalJSON
-# accepts:
-#
-#   2006-01-02T15:04:05Z                        (no fractional seconds)
-#   2006-01-02T15:04:05.999999999Z              (up to 9 fractional digits)
-#   2006-01-02T15:04:05.999999999+07:00         (numeric offset)
-#
-# It rejects anything else, including lower-case "t"/"z", missing timezone,
-# or non-numeric content. The regex below enforces the shape; a follow-up
-# datetime.fromisoformat() call catches semantic errors like month 13 or
-# day 32. Both checks must pass or the timestamp is invalid.
-_RFC3339_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$")
-
-
-def _is_valid_rfc3339(value: Any) -> bool:
-    """Return True if value parses as an RFC 3339 timestamp Go would accept.
-
-    Go's ``time.RFC3339Nano`` allows up to 9 fractional digits (nanoseconds).
-    Python's ``datetime.fromisoformat`` tops out at microsecond precision
-    (6 fractional digits) and the ``Z`` suffix only parses natively on 3.11+.
-    We handle both differences here so valid Go timestamps verify on 3.9-3.13.
-    """
-    if not isinstance(value, str):
-        return False
-    if not _RFC3339_RE.match(value):
-        return False
-    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
-    # Truncate fractional seconds to 6 digits so fromisoformat accepts
-    # Go's nanosecond timestamps on Python 3.9/3.10. The regex above has
-    # already validated the overall shape, so we know there is at most one
-    # ``.`` before the timezone offset.
-    match = re.match(
-        r"^(?P<prefix>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
-        r"(?:\.(?P<frac>\d{1,9}))?"
-        r"(?P<offset>[+-]\d{2}:\d{2})$",
-        candidate,
-    )
-    if match is None:
-        return False
-    prefix = match.group("prefix")
-    frac = match.group("frac") or ""
-    offset = match.group("offset")
-    truncated = f"{prefix}.{frac[:6]}{offset}" if frac else f"{prefix}{offset}"
-    try:
-        datetime.fromisoformat(truncated)
-    except ValueError:
-        return False
-    return True
-
-
-class InvalidReceiptError(Exception):
-    """Raised when a receipt cannot be parsed as JSON at all."""
 
 
 @dataclass
@@ -176,6 +123,32 @@ def verify(
     if receipt is None:
         return VerifyResult(
             valid=False, error="flight-recorder entry does not carry an action receipt"
+        )
+
+    # Version routing: dispatch on record_type field.
+    record_type = receipt.get("record_type")
+    if record_type == "evidence_receipt_v2":
+        from ._evidence import verify_evidence as _verify_v2
+
+        v2_result = _verify_v2(receipt, public_key_hex=public_key_hex)
+        # Wrap EvidenceVerifyResult into a VerifyResult for backward compat.
+        return VerifyResult(
+            valid=v2_result.valid,
+            error=v2_result.error,
+            action_id=v2_result.event_id,
+            action_type=v2_result.payload_kind,
+            verdict=None,
+            target=None,
+            transport=None,
+            signer_key=v2_result.signer_key_id,
+            chain_seq=v2_result.chain_seq,
+            chain_prev_hash=v2_result.chain_prev_hash,
+            timestamp=v2_result.timestamp,
+        )
+    if record_type is not None and record_type not in ("action_receipt_v1", None):
+        return VerifyResult(
+            valid=False,
+            error=f"unknown record_type: {record_type!r}",
         )
 
     return _verify_receipt_dict(receipt, public_key_hex)
@@ -263,8 +236,12 @@ def _extract_receipt(parsed: dict[str, Any]) -> dict[str, Any] | None:
             f"flight-recorder detail has unexpected type {type(detail).__name__}"
         )
 
-    # Bare receipt.
+    # Bare v1 receipt (ActionReceipt).
     if "action_record" in parsed and "signature" in parsed:
+        return parsed
+
+    # Bare v2 receipt (EvidenceReceipt): identified by record_type field.
+    if "record_type" in parsed and "payload" in parsed:
         return parsed
 
     raise InvalidReceiptError("unrecognized JSONL line: not a receipt or flight-recorder entry")
@@ -441,6 +418,29 @@ def _verify_chain_list(
 ) -> ChainResult:
     if not receipts:
         return ChainResult(valid=True, receipt_count=0)
+
+    # v2 chain verification is a v0.3 follow-up. v0.2.0 surfaces v2
+    # envelopes via verify_evidence() one at a time. If a chain contains
+    # any v2 receipt we fail closed rather than silently treating it as
+    # v1, which would falsely fail every v2 chain. Mixed v1/v2 chains
+    # are blocked for the same reason: chain-hash bridging across v1
+    # and v2 record types is not yet specified.
+    for i, receipt in enumerate(receipts):
+        if receipt.get("record_type") == "evidence_receipt_v2":
+            # Prefer the receipt's declared chain_seq so the failure marker
+            # matches the auditor's view of the sequence. Fall back to the
+            # list index if the field is absent or not an int (the receipt
+            # is being rejected anyway, so further validation is pointless).
+            declared = receipt.get("chain_seq")
+            broken = declared if isinstance(declared, int) and not isinstance(declared, bool) else i
+            return ChainResult(
+                valid=False,
+                broken_at_seq=broken,
+                error=(
+                    "v2 chain verification not yet implemented in v0.2.0; "
+                    "verify v2 receipts individually with verify_evidence()"
+                ),
+            )
 
     # When no key is pinned, lock to the first receipt's signer_key so an
     # attacker can't splice receipts from a second signer into the chain.

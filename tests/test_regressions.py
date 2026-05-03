@@ -319,3 +319,45 @@ def test_delegation_chain_null_canonicalizes_as_null():
     ar["delegation_chain"] = None
     canonical = canonicalize_action_record(ar)
     assert b'"delegation_chain":null' in canonical
+
+
+# --- Finding 6: v2-in-chain fail-closed should report receipt's chain_seq ---
+
+
+def test_v2_in_chain_fail_closed_uses_declared_chain_seq(tmp_path):
+    """When verify_chain encounters an evidence_receipt_v2 in v0.2.0 it
+    fails closed (v2 chain bridging is a v0.3 follow-up). The reported
+    broken_at_seq must reflect the receipt's declared chain_seq, not the
+    list index, so auditors see the same sequence the emitter wrote."""
+    f = tmp_path / "chain.jsonl"
+    receipt = {"record_type": "evidence_receipt_v2", "payload": {}, "chain_seq": 42}
+    f.write_text(json.dumps(receipt) + "\n")
+
+    result = pipelock_verify.verify_chain(f)
+    assert not result.valid
+    assert result.broken_at_seq == 42, f"want chain_seq=42 (declared), got {result.broken_at_seq}"
+
+
+def test_v2_in_chain_fallback_to_index_when_chain_seq_missing(tmp_path):
+    """When the v2 receipt omits chain_seq the fail-closed branch falls
+    back to the list index so broken_at_seq is never None."""
+    f = tmp_path / "chain.jsonl"
+    receipt = {"record_type": "evidence_receipt_v2", "payload": {}}  # no chain_seq
+    f.write_text(json.dumps(receipt) + "\n")
+
+    result = pipelock_verify.verify_chain(f)
+    assert not result.valid
+    assert result.broken_at_seq == 0
+
+
+def test_v2_in_chain_fallback_to_index_when_chain_seq_not_int(tmp_path):
+    """A non-int chain_seq (string, bool, None) is rejected and the
+    fail-closed branch falls back to the list index. The receipt is
+    being rejected anyway; the fallback keeps broken_at_seq typed."""
+    f = tmp_path / "chain.jsonl"
+    receipt = {"record_type": "evidence_receipt_v2", "payload": {}, "chain_seq": "garbage"}
+    f.write_text(json.dumps(receipt) + "\n")
+
+    result = pipelock_verify.verify_chain(f)
+    assert not result.valid
+    assert result.broken_at_seq == 0
