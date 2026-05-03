@@ -426,9 +426,15 @@ def _verify_chain_list(
     # and v2 record types is not yet specified.
     for i, receipt in enumerate(receipts):
         if receipt.get("record_type") == "evidence_receipt_v2":
+            # Prefer the receipt's declared chain_seq so the failure marker
+            # matches the auditor's view of the sequence. Fall back to the
+            # list index if the field is absent or not an int (the receipt
+            # is being rejected anyway, so further validation is pointless).
+            declared = receipt.get("chain_seq")
+            broken = declared if isinstance(declared, int) and not isinstance(declared, bool) else i
             return ChainResult(
                 valid=False,
-                broken_at_seq=i,
+                broken_at_seq=broken,
                 error=(
                     "v2 chain verification not yet implemented in v0.2.0; "
                     "verify v2 receipts individually with verify_evidence()"
