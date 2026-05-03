@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=82.0.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -38,20 +38,20 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "cryptography>=41.0",
+    "cryptography>=47.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "ruff>=0.4",
-    "mypy>=1.8",
+    "pytest>=8.4.2",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.12",
+    "mypy>=1.19.1",
 ]
 release = [
-    "build>=1.0",
-    "twine>=6.0",
-    "setuptools>=64",
+    "build>=1.4.4",
+    "twine>=6.2.0",
+    "setuptools>=82.0.1",
     "wheel",
 ]
 
