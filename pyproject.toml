@@ -38,7 +38,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "cryptography>=47.0.0",
+    "cryptography>=48.0.0",
 ]
 
 [project.optional-dependencies]
