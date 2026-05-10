@@ -1,7 +1,7 @@
 """Pipelock receipt verifier.
 
 Verifies Ed25519-signed receipts emitted by the Pipelock mediator. Supports
-both **ActionReceipt v1** (legacy) and **EvidenceReceipt v2** (contract-aware).
+ActionReceipt v1 chains and individual EvidenceReceipt v2 envelopes.
 
 Typical usage::
 
@@ -19,7 +19,7 @@ Typical usage::
         expected_key_purpose="receipt-signing",
     )
 
-    # Receipt chain from a flight recorder JSONL file.
+    # ActionReceipt v1 chain from a flight recorder JSONL file.
     chain = pipelock_verify.verify_chain("evidence-proxy-0.jsonl")
     if not chain.valid:
         raise SystemExit(f"chain broken at seq {chain.broken_at_seq}: {chain.error}")
@@ -30,7 +30,9 @@ Typical usage::
 
 Trust anchors are opt-in. Pass ``public_key_hex`` to pin a specific signer,
 or leave it empty to trust the key embedded in the receipt (chain mode then
-enforces signer consistency across every receipt in the file).
+enforces signer consistency across every v1 receipt in the file). v0.2.0
+rejects EvidenceReceipt v2 in chain mode; verify v2 receipts individually
+with verify() or verify_evidence().
 
 Wire format: see https://pipelab.org/learn/action-receipt-spec/ for field
 layout, canonicalization rules, and the exact signing input.

@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pipelock-verify"
 version = "0.2.0"
-description = "Verify Pipelock receipts: ActionReceipt v1 and EvidenceReceipt v2 (Ed25519-signed, chain-linked)."
+description = "Verify Pipelock receipts: ActionReceipt v1 chains and individual EvidenceReceipt v2 envelopes."
 readme = "README.md"
-license = { text = "Apache-2.0" }
-requires-python = ">=3.9"
+license = "Apache-2.0"
+requires-python = ">=3.9.2"
 authors = [
     { name = "PipeLab", email = "luckypipe@pipelab.org" },
 ]
@@ -24,7 +24,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
