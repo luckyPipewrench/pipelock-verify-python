@@ -21,15 +21,8 @@ def TestOneInput(data: bytes) -> None:
     if len(data) > 16384:
         data = data[:16384]
 
-    try:
-        text = data.decode("utf-8", errors="ignore")
-        pipelock_verify.verify(text)
-    except (MemoryError, RecursionError):
-        raise
-    except Exception:
-        # Malformed receipts, bad JSON, bad signatures, and unsupported shapes
-        # are expected corpus cases. The fuzzer is looking for crashes.
-        return
+    text = data.decode("utf-8", errors="ignore")
+    pipelock_verify.verify(text)
 
 
 def main() -> None:
