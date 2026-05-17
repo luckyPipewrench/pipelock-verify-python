@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Verify Pipelock receipts: ActionReceipt v1 chains and individual EvidenceReceipt v2 envelopes."
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.9.2"
+requires-python = ">=3.10"
 authors = [
     { name = "PipeLab", email = "luckypipe@pipelab.org" },
 ]
@@ -26,7 +26,6 @@ classifiers = [
     "Intended Audience :: System Administrators",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -82,6 +81,6 @@ select = ["E", "F", "W", "I", "B", "UP", "RUF"]
 ignore = ["E501"]  # line length handled by formatter
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 strict = true
 warn_return_any = true
