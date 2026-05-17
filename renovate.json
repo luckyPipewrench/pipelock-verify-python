@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":maintainLockFilesWeekly"
+  ],
+  "minimumReleaseAge": "10 days",
+  "internalChecksFilter": "strict",
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 10,
+  "vulnerabilityAlerts": {
+    "labels": ["security", "fast-track"],
+    "minimumReleaseAge": "0 days",
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "pinDigests": true,
+      "commitMessagePrefix": "ci:",
+      "addLabels": ["ci"],
+      "groupName": "ci-actions"
+    },
+    {
+      "matchManagers": ["pip_requirements", "pep621"],
+      "commitMessagePrefix": "deps:",
+      "addLabels": ["python"],
+      "groupName": "pip-deps"
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-update", "needs-review"],
+      "automerge": false
+    }
+  ]
+}
