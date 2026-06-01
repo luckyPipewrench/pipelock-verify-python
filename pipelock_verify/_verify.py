@@ -229,7 +229,7 @@ def _extract_receipt(parsed: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(detail, dict):
             return detail
         if isinstance(detail, (str, bytes)):
-            decoded = json.loads(detail)
+            decoded = loads_no_duplicate_keys(detail)
             if not isinstance(decoded, dict):
                 raise InvalidReceiptError("flight-recorder detail JSON did not decode to an object")
             return decoded

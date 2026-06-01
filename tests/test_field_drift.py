@@ -165,14 +165,14 @@ def test_loads_rejects_unicode_escaped_duplicate():
 
 
 def test_loads_rejects_over_deep_nesting():
-    deep = "[" * 200 + "1" + "]" * 200
+    deep = "[" * 129 + "1" + "]" * 129
     with pytest.raises(InvalidReceiptError):
         loads_no_duplicate_keys(deep)
 
 
-def test_loads_accepts_modest_nesting():
-    modest = "[" * 100 + "1" + "]" * 100
-    assert loads_no_duplicate_keys(modest) is not None
+def test_loads_accepts_exact_max_nesting():
+    max_depth = "[" * 128 + "1" + "]" * 128
+    assert loads_no_duplicate_keys(max_depth) is not None
 
 
 def test_loads_accepts_clean_nested_json():
@@ -193,5 +193,19 @@ def test_verify_rejects_duplicate_verdict_key():
         '"signature":"ed25519:00","signer_key":"00"}'
     )
     result = verify(receipt)
+    assert not result.valid
+    assert "duplicate object key" in (result.error or "")
+
+
+def test_verify_rejects_duplicate_key_inside_string_detail():
+    # Flight-recorder entries may carry detail as a JSON string. That inner JSON
+    # must use the same duplicate-key rejecting loader as top-level receipts.
+    entry = (
+        '{"type":"action_receipt","detail":"{\\"version\\":1,'
+        '\\"action_record\\":{\\"version\\":1,\\"verdict\\":\\"allow\\",'
+        '\\"verdict\\":\\"block\\"},\\"signature\\":\\"ed25519:00\\",'
+        '\\"signer_key\\":\\"00\\"}"}'
+    )
+    result = verify(entry)
     assert not result.valid
     assert "duplicate object key" in (result.error or "")

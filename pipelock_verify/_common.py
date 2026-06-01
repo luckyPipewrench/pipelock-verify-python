@@ -94,10 +94,9 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return dict(pairs)
 
 
-# Shared cross-language receipt-nesting cap. The Go and TypeScript verifiers
-# enforce the same value and Rust inherits it from serde_json's default
-# recursion limit, so all four reject input nested beyond this depth. Receipts
-# nest ~4 levels, so honest input is never affected.
+# Shared cross-language receipt-nesting cap. All four reference verifiers
+# enforce the same value explicitly and reject input nested beyond this depth.
+# Receipts nest ~4 levels, so honest input is never affected.
 _MAX_NESTING_DEPTH = 128
 
 
