@@ -26,48 +26,127 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# ActionRecord fields in Go struct-tag order. Each tuple is
-# (json_name, has_omitempty). Source of truth:
+# Field specs are (json_name, has_omitempty, nested_kind). nested_kind is one
+# of None, "action_record", "redaction", "shield", or "taint_source" and tells
+# the orderer to recurse into a nested object (or, for "taint_source", into
+# each element of a nested array) so the nested object's keys are reordered to
+# the Go struct order too. Go re-marshals nested structs in declaration order,
+# so a verifier that leaves nested object keys in input order recomputes a
+# different signing hash whenever the input keys are not already Go-ordered.
+#
+# ActionRecord fields in Go struct-tag order. Source of truth:
 # https://github.com/luckyPipewrench/pipelock/blob/main/internal/receipt/action.go
-_ACTION_RECORD_FIELDS: list[tuple[str, bool]] = [
-    ("version", False),
-    ("action_id", False),
-    ("action_type", False),
-    ("timestamp", False),
-    ("principal", False),
-    ("actor", False),
-    ("delegation_chain", False),
-    ("target", False),
-    ("intent", True),
-    ("data_classes_in", True),
-    ("data_classes_out", True),
-    ("side_effect_class", False),
-    ("reversibility", False),
-    ("policy_hash", False),
-    ("verdict", False),
-    ("transport", False),
-    ("method", True),
-    ("layer", True),
-    ("pattern", True),
-    ("request_id", True),
-    ("chain_prev_hash", False),
-    ("chain_seq", False),
-    ("venue", True),
-    ("jurisdiction", True),
-    ("rulebook_id", True),
-    ("remedy_class", True),
-    ("contestation_window", True),
-    ("precedent_refs", True),
+# The list MUST match that struct's field set, declaration order, and omitempty
+# semantics EXACTLY — including parent_action_id, the taint block, the contract
+# block, severity, redaction, and shield. Any omitted or reordered field breaks
+# signature verification for receipts that carry it.
+_ACTION_RECORD_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("version", False, None),
+    ("action_id", False, None),
+    ("parent_action_id", True, None),
+    ("action_type", False, None),
+    ("timestamp", False, None),
+    ("principal", False, None),
+    ("actor", False, None),
+    ("delegation_chain", False, None),
+    ("target", False, None),
+    ("intent", True, None),
+    ("data_classes_in", True, None),
+    ("data_classes_out", True, None),
+    ("side_effect_class", False, None),
+    ("reversibility", False, None),
+    ("policy_hash", False, None),
+    ("verdict", False, None),
+    ("session_taint_level", True, None),
+    ("session_contaminated", True, None),
+    ("recent_taint_sources", True, "taint_source"),
+    ("session_task_id", True, None),
+    ("session_task_label", True, None),
+    ("authority_kind", True, None),
+    ("taint_decision", True, None),
+    ("taint_decision_reason", True, None),
+    ("task_override_applied", True, None),
+    ("contract_winning_source", True, None),
+    ("contract_live_verdict", True, None),
+    ("contract_policy_sources", True, None),
+    ("contract_rule_id", True, None),
+    ("active_manifest_hash", True, None),
+    ("contract_hash", True, None),
+    ("contract_selector_id", True, None),
+    ("contract_generation", True, None),
+    ("transport", False, None),
+    ("method", True, None),
+    ("layer", True, None),
+    ("pattern", True, None),
+    ("severity", True, None),
+    ("redaction", True, "redaction"),
+    ("shield", True, "shield"),
+    ("request_id", True, None),
+    ("chain_prev_hash", False, None),
+    ("chain_seq", False, None),
+    ("venue", True, None),
+    ("jurisdiction", True, None),
+    ("rulebook_id", True, None),
+    ("remedy_class", True, None),
+    ("contestation_window", True, None),
+    ("precedent_refs", True, None),
 ]
 
 # Receipt envelope fields in Go struct-tag order. Source of truth:
 # https://github.com/luckyPipewrench/pipelock/blob/main/internal/receipt/receipt.go
-_RECEIPT_FIELDS: list[tuple[str, bool]] = [
-    ("version", False),
-    ("action_record", False),
-    ("signature", False),
-    ("signer_key", False),
+_RECEIPT_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("version", False, None),
+    ("action_record", False, "action_record"),
+    ("signature", False, None),
+    ("signer_key", False, None),
 ]
+
+# RedactionSummary fields, Go struct order (receipt.RedactionSummary).
+_REDACTION_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("profile", True, None),
+    ("provider", True, None),
+    ("parser", True, None),
+    ("total_redactions", True, None),
+    ("by_class", True, None),
+    ("cache_boundary_kept", True, None),
+]
+
+# ShieldSummary fields, Go struct order (receipt.ShieldSummary).
+_SHIELD_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("pipeline", True, None),
+    ("total_rewrites", True, None),
+    ("extension_probes", True, None),
+    ("tracking_beacons", True, None),
+    ("agent_traps", True, None),
+    ("fingerprint_shim_injected", True, None),
+    ("svg_foreign_objects", True, None),
+    ("svg_event_handlers", True, None),
+    ("svg_external_references", True, None),
+    ("svg_hidden_text", True, None),
+    ("svg_animation_injections", True, None),
+    ("body_bytes", True, None),
+    ("scanned_bytes", True, None),
+    ("partial", True, None),
+    ("adaptive_signals_recorded", True, None),
+    ("adaptive_signal_max_per_body", True, None),
+]
+
+# TaintSourceRef fields, Go struct order (session.TaintSourceRef).
+_TAINT_SOURCE_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("url", False, None),
+    ("kind", False, None),
+    ("level", False, None),
+    ("timestamp", False, None),
+    ("receipt_id", True, None),
+    ("match_reason", True, None),
+]
+
+# Maps a nested_kind tag to its field list (object-valued nests only).
+_NESTED_OBJECT_FIELDS: dict[str, list[tuple[str, bool, str | None]]] = {
+    "action_record": _ACTION_RECORD_FIELDS,
+    "redaction": _REDACTION_FIELDS,
+    "shield": _SHIELD_FIELDS,
+}
 
 
 def _is_go_zero(value: Any) -> bool:
@@ -97,40 +176,55 @@ def _is_go_zero(value: Any) -> bool:
     return False
 
 
-def _order_action_record(ar: dict[str, Any]) -> dict[str, Any]:
-    """Return a new dict with ActionRecord fields in Go's canonical order.
+def _normalize_maps(value: Any) -> Any:
+    """Recursively sort the keys of any plain map, matching Go's json.Marshal.
+
+    Go marshals a ``map[string]T`` with keys in sorted order. Struct fields are
+    emitted in declaration order (handled by the field-list orderers), but a
+    value that is a free-form map — the only one in the schema is
+    ``redaction.by_class`` — must have its keys sorted here or it canonicalizes
+    differently than Go whenever the input keys are not already sorted. Mirrors
+    the TypeScript ``normalizeMaps`` and Rust ``normalize_maps`` helpers.
+    """
+    if isinstance(value, list):
+        return [_normalize_maps(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_maps(value[key]) for key in sorted(value)}
+    return value
+
+
+def _order_object(
+    obj: dict[str, Any],
+    fields: list[tuple[str, bool, str | None]],
+) -> dict[str, Any]:
+    """Return a new dict with ``obj``'s keys in Go's canonical struct order.
 
     Missing fields are skipped. ``omitempty`` fields with zero values are
     dropped. Unknown fields are ignored: Go's ``json.Unmarshal`` would drop
     them, and the re-serialized canonical form should not include them.
+
+    Nested fields recurse so nested object keys are reordered to Go order too:
+
+    * ``"action_record"``/``"redaction"``/``"shield"`` reorder an object value.
+    * ``"taint_source"`` reorders each object element of an array value.
     """
     ordered: dict[str, Any] = {}
-    for name, omitempty in _ACTION_RECORD_FIELDS:
-        if name not in ar:
+    for name, omitempty, nested in fields:
+        if name not in obj:
             continue
-        value = ar[name]
+        value = obj[name]
         if omitempty and _is_go_zero(value):
             continue
-        ordered[name] = value
-    return ordered
-
-
-def _order_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
-    """Return a new dict with Receipt fields in Go's canonical order.
-
-    The nested ``action_record`` is also reordered, so this function alone
-    is enough to produce canonical bytes for the full envelope (used when
-    computing chain prev_hash linkage).
-    """
-    ordered: dict[str, Any] = {}
-    for name, omitempty in _RECEIPT_FIELDS:
-        if name not in receipt:
-            continue
-        value = receipt[name]
-        if omitempty and _is_go_zero(value):
-            continue
-        if name == "action_record" and isinstance(value, dict):
-            value = _order_action_record(value)
+        if nested == "taint_source" and isinstance(value, list):
+            value = [
+                _order_object(item, _TAINT_SOURCE_FIELDS) if isinstance(item, dict) else item
+                for item in value
+            ]
+        elif nested in _NESTED_OBJECT_FIELDS and isinstance(value, dict):
+            value = _order_object(value, _NESTED_OBJECT_FIELDS[nested])
+        else:
+            # Non-struct value: sort any free-form map keys to match Go.
+            value = _normalize_maps(value)
         ordered[name] = value
     return ordered
 
@@ -164,7 +258,7 @@ def canonicalize_action_record(ar: dict[str, Any]) -> bytes:
     The returned bytes are what Go's ``ActionRecord.Canonical()`` produces
     and what gets SHA-256-hashed before Ed25519 signing.
     """
-    return _to_canonical_bytes(_order_action_record(ar))
+    return _to_canonical_bytes(_order_object(ar, _ACTION_RECORD_FIELDS))
 
 
 def canonicalize_receipt(receipt: dict[str, Any]) -> bytes:
@@ -173,4 +267,4 @@ def canonicalize_receipt(receipt: dict[str, Any]) -> bytes:
     The returned bytes are what Go's ``json.Marshal(receipt)`` produces
     and what gets SHA-256-hashed to form the next receipt's ``chain_prev_hash``.
     """
-    return _to_canonical_bytes(_order_receipt(receipt))
+    return _to_canonical_bytes(_order_object(receipt, _RECEIPT_FIELDS))

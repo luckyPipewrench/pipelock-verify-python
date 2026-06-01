@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from ._canonical import canonicalize_action_record, canonicalize_receipt
 from ._common import InvalidReceiptError as InvalidReceiptError
 from ._common import _is_valid_rfc3339 as _is_valid_rfc3339
+from ._common import loads_no_duplicate_keys
 
 # Wire format constants — keep in sync with internal/receipt/receipt.go.
 _RECEIPT_VERSION = 1
@@ -199,7 +200,7 @@ def _parse_receipt(source: str | bytes | dict[str, Any]) -> dict[str, Any]:
         raise InvalidReceiptError(
             f"unsupported source type {type(source).__name__}; expected str, bytes, or dict"
         )
-    parsed = json.loads(source)
+    parsed = loads_no_duplicate_keys(source)
     if not isinstance(parsed, dict):
         raise InvalidReceiptError("receipt must be a JSON object")
     return parsed
@@ -255,7 +256,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if not line:
             continue
         try:
-            parsed = json.loads(line)
+            parsed = loads_no_duplicate_keys(line)
         except json.JSONDecodeError as exc:
             raise json.JSONDecodeError(f"line {lineno}: {exc.msg}", exc.doc, exc.pos) from exc
         if not isinstance(parsed, dict):
