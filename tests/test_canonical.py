@@ -69,6 +69,19 @@ def test_omitempty_keeps_non_empty_string():
     assert target_pos < intent_pos < side_effect_pos
 
 
+def test_run_nonce_ordered_after_chain_seq():
+    """run_nonce is signed after chain_seq and before legal metadata."""
+    ar = _minimal_action_record()
+    ar["run_nonce"] = "0123456789abcdef0123456789abcdef"
+    ar["venue"] = "federal"
+    canonical = canonicalize_action_record(ar).decode()
+
+    assert (
+        '"chain_prev_hash":"genesis","chain_seq":0,'
+        '"run_nonce":"0123456789abcdef0123456789abcdef","venue":"federal"'
+    ) in canonical
+
+
 def test_omitempty_drops_empty_list():
     """Empty ``data_classes_in`` is dropped."""
     ar = _minimal_action_record()

@@ -79,6 +79,7 @@ def _full_field_record() -> dict:
         "request_id": "req-1",
         "chain_prev_hash": "genesis",
         "chain_seq": 0,
+        "run_nonce": "0123456789abcdef0123456789abcdef",
     }
 
 
@@ -121,6 +122,7 @@ def test_taint_block_present_in_canonical():
         "contract_hash",
         "contract_generation",
         "severity",
+        "run_nonce",
     ):
         assert f'"{field}"' in canonical, f"{field} missing from canonical output"
 

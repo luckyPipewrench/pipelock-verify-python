@@ -84,6 +84,7 @@ _ACTION_RECORD_FIELDS: list[tuple[str, bool, str | None]] = [
     ("request_id", True, None),
     ("chain_prev_hash", False, None),
     ("chain_seq", False, None),
+    ("run_nonce", True, None),
     ("venue", True, None),
     ("jurisdiction", True, None),
     ("rulebook_id", True, None),
