@@ -7,6 +7,7 @@ so these exact failure modes can never quietly come back.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import pipelock_verify
 from pipelock_verify.__main__ import main
-from pipelock_verify._canonical import canonicalize_action_record
+from pipelock_verify._canonical import canonicalize_action_record, canonicalize_receipt
 
 CONFORMANCE_DIR = Path(__file__).parent / "conformance"
 
@@ -361,3 +362,432 @@ def test_v2_in_chain_fallback_to_index_when_chain_seq_not_int(tmp_path):
     result = pipelock_verify.verify_chain(f)
     assert not result.valid
     assert result.broken_at_seq == 0
+
+
+# --- Finding 7: v1 chain/session-control fail-closed parity ---
+
+
+def _write_signed_chain(tmp_path: Path, *receipts: dict) -> Path:
+    f = tmp_path / "chain.jsonl"
+    f.write_text("\n".join(json.dumps(r, separators=(",", ":")) for r in receipts) + "\n")
+    return f
+
+
+def _receipt_hash(receipt: dict) -> str:
+    return hashlib.sha256(canonicalize_receipt(receipt)).hexdigest()
+
+
+def test_verify_chain_rejects_bool_chain_seq_even_with_valid_signature(tmp_path):
+    ar = _valid_action_record()
+    ar["action_id"] = "bool-chain-seq"
+    ar["chain_seq"] = False
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert "chain_seq must be a uint64" in (result.error or "")
+
+
+def test_verify_chain_rejects_negative_chain_seq_even_with_valid_signature(tmp_path):
+    ar = _valid_action_record()
+    ar["action_id"] = "negative-chain-seq"
+    ar["chain_seq"] = -1
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert "chain_seq must be a uint64" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    ("session_control", "want"),
+    [
+        ("not-object", "session_control must be an object"),
+        ({"kind": "session_open"}, "session_control must carry exactly one payload"),
+        (
+            {"kind": "session_open", "heartbeat": {}},
+            "session_open kind missing open payload",
+        ),
+        (
+            {"kind": "heartbeat", "open": {}},
+            "heartbeat kind missing heartbeat payload",
+        ),
+        (
+            {"kind": "session_close", "open": {}},
+            "session_close kind missing close payload",
+        ),
+        ({"kind": "unknown", "open": {}}, "unknown session_control kind"),
+        (
+            {"kind": "heartbeat", "heartbeat": {"beat": True}},
+            "session_heartbeat beat must be a uint64",
+        ),
+        (
+            {"kind": "session_open", "open": {"heartbeat_seconds": True}},
+            "session_open heartbeat_seconds must be an integer",
+        ),
+        (
+            {"kind": "session_open", "open": {"heartbeat_seconds": 2**63}},
+            "session_open heartbeat_seconds must be an integer",
+        ),
+    ],
+)
+def test_verify_chain_rejects_malformed_session_control_even_with_valid_signature(
+    tmp_path,
+    session_control,
+    want,
+):
+    ar = _valid_action_record()
+    ar["action_id"] = "malformed-session-control"
+    ar["session_control"] = session_control
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert want in (result.error or "")
+
+
+def test_verify_chain_rejects_first_run_nonce_without_session_open(tmp_path):
+    ar = _valid_action_record()
+    ar["action_id"] = "run-nonce-no-open"
+    ar["run_nonce"] = "run-attack"
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert "run_nonce first receipt is not a matching session_open" in (result.error or "")
+
+
+def test_verify_chain_rejects_unknown_signed_v1_field_even_with_valid_signature(tmp_path):
+    ar = _valid_action_record()
+    ar["action_id"] = "unknown-field"
+    ar["unsigned_but_plausible"] = "display-me"
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert "unknown signed field" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "want"),
+    [
+        ("redaction", {"unknown": 1}, "redaction carries unknown signed field"),
+        ("redaction", {"total_redactions": True}, "redaction total_redactions must be an integer"),
+        ("shield", {"unknown": 1}, "shield carries unknown signed field"),
+        ("shield", {"total_rewrites": True}, "shield total_rewrites must be an integer"),
+        (
+            "recent_taint_sources",
+            [{"url": "https://src.example", "kind": "k", "level": True}],
+            "recent_taint_sources[0] level must be a uint8",
+        ),
+        (
+            "recent_taint_sources",
+            [{"url": "https://src.example", "kind": "k", "level": 4, "unknown": "x"}],
+            "recent_taint_sources[0] carries unknown signed field",
+        ),
+    ],
+)
+def test_verify_chain_rejects_malformed_existing_signed_nested_objects(
+    tmp_path,
+    field,
+    value,
+    want,
+):
+    ar = _valid_action_record()
+    ar["action_id"] = "malformed-existing-nested"
+    ar[field] = value
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert want in (result.error or "")
+
+
+def test_verify_chain_rejects_first_receipt_key_transition_even_with_valid_signature(tmp_path):
+    ar = _valid_action_record()
+    ar["action_id"] = "first-key-transition"
+    ar["key_transition"] = {
+        "prior_signer_key": "old-key",
+        "prior_chain_seq": 99,
+        "prior_chain_hash": "old-hash",
+    }
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert "chain starts at a key_transition segment" in (result.error or "")
+
+
+def test_verify_chain_rejects_non_genesis_key_transition_even_with_valid_signature(tmp_path):
+    first = _sign_action_record(_valid_action_record())
+    ar = _valid_action_record()
+    ar["action_id"] = "non-genesis-key-transition"
+    ar["timestamp"] = "2026-04-09T13:50:01Z"
+    ar["chain_seq"] = 1
+    ar["chain_prev_hash"] = _receipt_hash(first)
+    ar["key_transition"] = {
+        "prior_signer_key": first["signer_key"],
+        "prior_chain_seq": 0,
+        "prior_chain_hash": ar["chain_prev_hash"],
+    }
+    second = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, first, second))
+
+    assert not result.valid
+    assert "key_transition marker on a non-genesis receipt" in (result.error or "")
+
+
+def test_verify_chain_rejects_session_control_without_receipt_run_nonce(tmp_path):
+    ar = _valid_action_record()
+    ar["action_id"] = "session-control-no-receipt-run"
+    ar["session_control"] = {
+        "kind": "heartbeat",
+        "heartbeat": {
+            "run_nonce": "run-2",
+            "open_nonce": "open-2",
+            "beat": 1,
+            "chain_head": "genesis",
+            "chain_seq_head": 0,
+            "heartbeat_time": "2026-04-09T13:50:01Z",
+            "fsync_errors_gated": 0,
+            "durability_blocks": 0,
+        },
+    }
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert "session_control receipt missing run_nonce" in (result.error or "")
+
+
+def test_verify_chain_accepts_restart_session_open_bound_to_prior_tail(tmp_path):
+    first = _sign_action_record(_valid_action_record())
+    prior_hash = _receipt_hash(first)
+    ar = _valid_action_record()
+    ar["action_id"] = "good-restart-open"
+    ar["timestamp"] = "2026-04-09T13:50:01Z"
+    ar["chain_seq"] = 1
+    ar["chain_prev_hash"] = prior_hash
+    ar["run_nonce"] = "run-2"
+    ar["session_control"] = {
+        "kind": "session_open",
+        "open": {
+            "run_nonce": "run-2",
+            "open_nonce": "open-2",
+            "recorder_session": "proxy",
+            "policy_hash": "policy",
+            "signer_key_epoch": first["signer_key"],
+            "heartbeat_seconds": 60,
+            "chain_open_seq": 1,
+            "prior_chain_head": prior_hash,
+            "prior_chain_seq": 0,
+        },
+    }
+    second = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, first, second))
+
+    assert result.valid, result.error
+
+
+@pytest.mark.parametrize(
+    ("mutate", "want"),
+    [
+        (
+            lambda open_payload, prior_hash: open_payload.update(
+                {"prior_chain_head": "not-the-prior-tail"}
+            ),
+            "session_open prior_chain_head does not match prior tail hash",
+        ),
+        (
+            lambda open_payload, prior_hash: open_payload.update({"prior_chain_seq": 99}),
+            "session_open prior_chain_seq does not match prior tail seq",
+        ),
+        (
+            lambda open_payload, prior_hash: open_payload.update({"chain_open_seq": 2}),
+            "session_open chain_open_seq does not match receipt chain_seq",
+        ),
+        (
+            lambda open_payload, prior_hash: open_payload.update({"genesis_hash": "g1:bad"}),
+            "restart session_open must not carry genesis_hash",
+        ),
+    ],
+)
+def test_verify_chain_rejects_malformed_restart_session_open_even_with_valid_signature(
+    tmp_path,
+    mutate,
+    want,
+):
+    first = _sign_action_record(_valid_action_record())
+    prior_hash = _receipt_hash(first)
+    ar = _valid_action_record()
+    ar["action_id"] = "bad-restart-open"
+    ar["timestamp"] = "2026-04-09T13:50:01Z"
+    ar["chain_seq"] = 1
+    ar["chain_prev_hash"] = prior_hash
+    ar["run_nonce"] = "run-2"
+    open_payload = {
+        "run_nonce": "run-2",
+        "open_nonce": "open-2",
+        "recorder_session": "proxy",
+        "policy_hash": "policy",
+        "signer_key_epoch": first["signer_key"],
+        "heartbeat_seconds": 60,
+        "chain_open_seq": 1,
+        "prior_chain_head": prior_hash,
+        "prior_chain_seq": 0,
+    }
+    mutate(open_payload, prior_hash)
+    ar["session_control"] = {"kind": "session_open", "open": open_payload}
+    second = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, first, second))
+
+    assert not result.valid
+    assert want in (result.error or "")
+
+
+def test_verify_chain_rejects_heartbeat_with_wrong_tail_binding(tmp_path):
+    first = _sign_action_record(_valid_action_record())
+    prior_hash = _receipt_hash(first)
+    open_ar = _valid_action_record()
+    open_ar["action_id"] = "restart-open-before-heartbeat"
+    open_ar["timestamp"] = "2026-04-09T13:50:01Z"
+    open_ar["chain_seq"] = 1
+    open_ar["chain_prev_hash"] = prior_hash
+    open_ar["run_nonce"] = "run-2"
+    open_ar["session_control"] = {
+        "kind": "session_open",
+        "open": {
+            "run_nonce": "run-2",
+            "open_nonce": "open-2",
+            "recorder_session": "proxy",
+            "policy_hash": "policy",
+            "signer_key_epoch": first["signer_key"],
+            "heartbeat_seconds": 60,
+            "chain_open_seq": 1,
+            "prior_chain_head": prior_hash,
+            "prior_chain_seq": 0,
+        },
+    }
+    second = _sign_action_record(open_ar)
+    second_hash = _receipt_hash(second)
+
+    heartbeat_ar = _valid_action_record()
+    heartbeat_ar["action_id"] = "bad-heartbeat"
+    heartbeat_ar["timestamp"] = "2026-04-09T13:50:02Z"
+    heartbeat_ar["chain_seq"] = 2
+    heartbeat_ar["chain_prev_hash"] = second_hash
+    heartbeat_ar["run_nonce"] = "run-2"
+    heartbeat_ar["session_control"] = {
+        "kind": "heartbeat",
+        "heartbeat": {
+            "run_nonce": "run-2",
+            "open_nonce": "open-2",
+            "beat": 1,
+            "chain_head": "not-the-prior-tail",
+            "chain_seq_head": 1,
+            "heartbeat_time": "2026-04-09T13:50:02Z",
+            "fsync_errors_gated": 0,
+            "durability_blocks": 0,
+        },
+    }
+    third = _sign_action_record(heartbeat_ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, first, second, third))
+
+    assert not result.valid
+    assert "heartbeat chain_head mismatch" in (result.error or "")
+
+
+def test_verify_chain_rejects_session_close_with_wrong_root_hash(tmp_path):
+    first = _sign_action_record(_valid_action_record())
+    prior_hash = _receipt_hash(first)
+    open_ar = _valid_action_record()
+    open_ar["action_id"] = "restart-open-before-close"
+    open_ar["timestamp"] = "2026-04-09T13:50:01Z"
+    open_ar["chain_seq"] = 1
+    open_ar["chain_prev_hash"] = prior_hash
+    open_ar["run_nonce"] = "run-2"
+    open_ar["session_control"] = {
+        "kind": "session_open",
+        "open": {
+            "run_nonce": "run-2",
+            "open_nonce": "open-2",
+            "recorder_session": "proxy",
+            "policy_hash": "policy",
+            "signer_key_epoch": first["signer_key"],
+            "heartbeat_seconds": 60,
+            "chain_open_seq": 1,
+            "prior_chain_head": prior_hash,
+            "prior_chain_seq": 0,
+        },
+    }
+    second = _sign_action_record(open_ar)
+    second_hash = _receipt_hash(second)
+
+    close_ar = _valid_action_record()
+    close_ar["action_id"] = "bad-close"
+    close_ar["timestamp"] = "2026-04-09T13:50:02Z"
+    close_ar["chain_seq"] = 2
+    close_ar["chain_prev_hash"] = second_hash
+    close_ar["run_nonce"] = "run-2"
+    close_ar["session_control"] = {
+        "kind": "session_close",
+        "close": {
+            "run_nonce": "run-2",
+            "open_nonce": "open-2",
+            "final_seq": 2,
+            "root_hash": "not-the-prior-tail",
+            "receipt_count": 3,
+            "close_reason": "normal",
+            "fsync_errors_gated": 0,
+            "durability_blocks": 0,
+        },
+    }
+    third = _sign_action_record(close_ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, first, second, third))
+
+    assert not result.valid
+    assert "session_close root_hash mismatch" in (result.error or "")
+
+
+# The key_transition SHAPE gate is only reachable through the single-receipt
+# path: verify_chain() rejects any key_transition marker by POSITION first
+# (seq 0 -> "starts at a key_transition segment", seq > 0 -> "non-genesis"),
+# so a chain-level test can never exercise shape validation. Without these,
+# _validate_key_transition_shape passes every test even when deleted.
+@pytest.mark.parametrize(
+    ("marker", "want"),
+    [
+        (
+            {"prior_signer_key": "old", "prior_chain_seq": 0, "prior_chain_hash": "h", "bogus": 1},
+            "key_transition carries unknown signed field",
+        ),
+        ({"prior_signer_key": 123}, "key_transition prior_signer_key must be a string"),
+        ({"prior_chain_hash": 123}, "key_transition prior_chain_hash must be a string"),
+        ({"prior_chain_seq": -1}, "key_transition prior_chain_seq must be a uint64"),
+        ({"prior_chain_seq": True}, "key_transition prior_chain_seq must be a uint64"),
+        ("not-an-object", "key_transition must be an object"),
+    ],
+)
+def test_verify_rejects_malformed_key_transition_even_with_valid_signature(marker, want):
+    ar = _valid_action_record()
+    ar["action_id"] = "malformed-key-transition"
+    ar["key_transition"] = marker
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify(json.dumps(receipt))
+
+    assert not result.valid
+    assert want in (result.error or "")

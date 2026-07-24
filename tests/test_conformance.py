@@ -16,6 +16,7 @@ import pytest
 import pipelock_verify
 
 CONFORMANCE_DIR = Path(__file__).parent / "conformance"
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(scope="module")
@@ -129,3 +130,24 @@ def test_broken_chain_individual_signatures_valid(test_key_hex):
     for i, line in enumerate(raw.strip().split("\n")):
         result = pipelock_verify.verify(line, public_key_hex=test_key_hex)
         assert result.valid, f"receipt {i} sig invalid: {result.error}"
+
+
+def test_v3_2_0_live_recorder_chain_verifies_with_pinned_key():
+    """A real v3.2.0 recorder log must verify end-to-end.
+
+    This fixture carries action_receipt entries with decision_phase,
+    run_nonce, session_open/heartbeat/session_close controls, interleaved with
+    evidence_receipt, checkpoint, and transcript_root entries. It is the
+    regression gate for drift from Go's frozen v1 canonical projection in
+    internal/receipt/canonical.go.
+    """
+    public_key = (FIXTURE_DIR / "v3_2_0_live_chain.pub").read_text().strip()
+    result = pipelock_verify.verify_chain(
+        FIXTURE_DIR / "v3_2_0_live_chain.jsonl",
+        public_key_hex=public_key,
+    )
+    assert result.valid, f"live v3.2.0 chain invalid: {result.error}"
+    assert result.receipt_count == 11
+    assert result.final_seq == 10
+    assert result.start_time == "2026-07-24T22:57:41.86819273Z"
+    assert result.end_time == "2026-07-24T23:00:44.292030929Z"
