@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-24
+
+### Fixed
+
+- **Signature verification against current Pipelock releases.** The v1 canonical
+  projection omitted nine fields the emitter signs, so every receipt produced by
+  a current Pipelock failed verification. `decision_phase` is emitted on ordinary
+  proxy decisions, which made the break total rather than partial. Restores
+  `decision_phase`, `defer_id`, `resolution_policy`, `resolution_source`,
+  `session_id`, `session_id_original`, `run_nonce`, `key_transition` and
+  `session_control` in the emitter's declaration order, with the nested ordering
+  and omitempty semantics the frozen signing projection uses.
+
+- **Chain hash coverage of the `ext` bag.** The receipt envelope omitted `ext`,
+  but the emitter's receipt hash is a digest over the marshalled receipt and
+  `ext` is a marshalled field. The chain hash was therefore identical with and
+  without `ext`, and `ext` could be attached or altered without moving the hash
+  the chain commits to. `ext` is now included, ordered last, and its original
+  bytes are preserved from the source JSON, since the emitter writes it verbatim
+  and re-serializing it changes key order, number spelling and escaping.
+
+- **Seven classes of chain that verified here and are rejected by the emitter.**
+  Malformed `session_control`, out-of-range `chain_seq`, unknown signed fields,
+  malformed nested objects, misplaced `key_transition` markers, restart opens not
+  bound to the prior tail, and unbounded integer counters were all accepted with
+  a valid signature.
+
+### Added
+
+- **Bound session-open genesis validation.** Chains anchored with the `g1:`
+  prefix are checked against the genesis digest the emitter computes, including
+  the run and open nonces, policy hash, signer key epoch, and the posture and
+  containment binding.
+
+- **A regression fixture captured from a real release binary**, covering session
+  open, heartbeat and close, evidence receipts, transcript root and checkpoint
+  records, with the root hash pinned to the value the Go verifier independently
+  computes. Parity is checked against genuine emitter output rather than
+  hand-written data that can drift alongside the code it is meant to check.
+
+### Note
+
+0.2.0 was never published to PyPI. Upgrading from 0.1.1 picks up the
+EvidenceReceipt v2 support and well-known directory helpers described under
+0.2.0 as well as everything above.
+
 ## [0.2.0] - 2026-05-01
 
 ### Added
