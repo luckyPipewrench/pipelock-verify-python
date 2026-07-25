@@ -64,9 +64,7 @@ Pass a flight-recorder JSONL path:
 chain = pipelock_verify.verify_chain("evidence-proxy-0.jsonl")
 
 if not chain.valid:
-    raise SystemExit(
-        f"chain broken at seq {chain.broken_at_seq}: {chain.error}"
-    )
+    raise SystemExit(f"chain broken at seq {chain.broken_at_seq}: {chain.error}")
 
 print(f"CHAIN VALID: {chain.receipt_count} receipts, root {chain.root_hash}")
 ```

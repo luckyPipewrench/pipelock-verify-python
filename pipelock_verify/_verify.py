@@ -24,6 +24,7 @@ from ._canonical import (
     _TAINT_SOURCE_FIELDS,
     canonicalize_action_record,
     canonicalize_receipt,
+    raw_json_value,
 )
 from ._common import InvalidReceiptError as InvalidReceiptError
 from ._common import _is_valid_rfc3339 as _is_valid_rfc3339
@@ -46,6 +47,7 @@ _SESSION_OPEN_GENESIS_PREFIX = "g1:"
 _SESSION_OPEN_GENESIS_LABEL = "pipelock.receipt.session_open.v1"
 _UINT64_MAX = 2**64 - 1
 _INT64_MAX = 2**63 - 1
+_JSON_DECODER = json.JSONDecoder()
 
 # Valid action_type enum values. Matches the allActionTypes map in
 # internal/receipt/action.go. A verifier that does not enforce this set
@@ -231,7 +233,82 @@ def _parse_receipt(source: str | bytes | dict[str, Any]) -> dict[str, Any]:
     parsed = loads_no_duplicate_keys(source)
     if not isinstance(parsed, dict):
         raise InvalidReceiptError("receipt must be a JSON object")
+    _attach_raw_ext(parsed, source)
     return parsed
+
+
+def _find_top_level_raw_member(text: str, member: str) -> str | None:
+    """Return the raw JSON value for a top-level object member, if present."""
+
+    length = len(text)
+    index = 0
+    while index < length and text[index] in " \t\r\n":
+        index += 1
+    if index >= length or text[index] != "{":
+        return None
+    index += 1
+
+    while True:
+        while index < length and text[index] in " \t\r\n":
+            index += 1
+        if index >= length or text[index] == "}":
+            return None
+        key, index = _JSON_DECODER.raw_decode(text, index)
+        if not isinstance(key, str):
+            return None
+        while index < length and text[index] in " \t\r\n":
+            index += 1
+        if index >= length or text[index] != ":":
+            return None
+        index += 1
+        while index < length and text[index] in " \t\r\n":
+            index += 1
+        value_start = index
+        _value, index = _JSON_DECODER.raw_decode(text, index)
+        if key == member:
+            return text[value_start:index]
+        while index < length and text[index] in " \t\r\n":
+            index += 1
+        if index < length and text[index] == ",":
+            index += 1
+            continue
+        return None
+
+
+def _attach_receipt_raw_ext(receipt: dict[str, Any], receipt_text: str) -> None:
+    raw_ext = _find_top_level_raw_member(receipt_text, "ext")
+    if raw_ext is not None:
+        receipt["ext"] = raw_json_value(raw_ext)
+
+
+def _attach_raw_ext(parsed: dict[str, Any], source_text: str) -> None:
+    """Preserve Go json.RawMessage bytes for receipt ext when source JSON exists.
+
+    Go emits ``Receipt.Ext`` verbatim (compacted) into the bytes ``ReceiptHash``
+    digests, so the chain hash commits to the producer's exact ext bytes: key
+    order, number spelling such as ``1e+06``, and escaping all survive. Parsing
+    ext and re-serializing it would silently change those bytes and diverge from
+    Go on receipts that carry ext, so the raw source slice is kept whenever the
+    caller gave us the original JSON text.
+
+    A caller that passes an ALREADY-PARSED receipt (the ``dict`` entry points,
+    rather than a path or a JSON string) has no source bytes left to preserve,
+    so ext is re-serialized from the parsed value and the chain hash can differ
+    from Go for exotic-but-equivalent spellings. That direction is fail-closed:
+    such a chain is reported broken rather than accepted, and an attacker gains
+    nothing, because altering ext's parsed VALUE changes this verifier's hash
+    too. Verify from a path or the raw JSON text when ext byte fidelity matters.
+    """
+
+    if "action_record" in parsed and "signature" in parsed:
+        _attach_receipt_raw_ext(parsed, source_text)
+        return
+
+    if not ("type" in parsed and "detail" in parsed and isinstance(parsed.get("detail"), dict)):
+        return
+    raw_detail = _find_top_level_raw_member(source_text, "detail")
+    if raw_detail is not None:
+        _attach_receipt_raw_ext(parsed["detail"], raw_detail)
 
 
 def _extract_receipt(parsed: dict[str, Any]) -> dict[str, Any] | None:
@@ -260,6 +337,8 @@ def _extract_receipt(parsed: dict[str, Any]) -> dict[str, Any] | None:
             decoded = loads_no_duplicate_keys(detail)
             if not isinstance(decoded, dict):
                 raise InvalidReceiptError("flight-recorder detail JSON did not decode to an object")
+            raw_detail = detail.decode("utf-8") if isinstance(detail, bytes) else detail
+            _attach_receipt_raw_ext(decoded, raw_detail)
             return decoded
         raise InvalidReceiptError(
             f"flight-recorder detail has unexpected type {type(detail).__name__}"
@@ -289,6 +368,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
             raise json.JSONDecodeError(f"line {lineno}: {exc.msg}", exc.doc, exc.pos) from exc
         if not isinstance(parsed, dict):
             raise json.JSONDecodeError(f"line {lineno}: JSONL entry must be a JSON object", line, 0)
+        _attach_raw_ext(parsed, line)
         receipt = _extract_receipt(parsed)
         if receipt is None:
             # Non-receipt recorder entry (checkpoint, other event). Skip

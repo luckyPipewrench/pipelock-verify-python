@@ -28,12 +28,16 @@ from typing import Any
 
 # Field specs are (json_name, has_omitempty, nested_kind). nested_kind is one
 # of None, "action_record", "redaction", "shield", "taint_source",
-# "key_transition", "session_control", or a session-control payload kind and
-# tells the orderer to recurse into a nested object (or, for "taint_source",
-# into each element of a nested array) so the nested object's keys are reordered
-# to the Go struct order too. Go re-marshals nested structs in declaration
-# order, so a verifier that leaves nested object keys in input order recomputes
-# a different signing hash whenever the input keys are not already Go-ordered.
+# "key_transition", "session_control", a session-control payload kind, or
+# "raw_json". Nested struct kinds tell the orderer to recurse into a nested
+# object (or, for "taint_source", into each element of a nested array) so the
+# nested object's keys are reordered to the Go struct order too. "raw_json"
+# models Go's json.RawMessage: it is compacted and HTML-escaped, but its inner
+# object key order and number spellings are preserved.
+#
+# Go re-marshals nested structs in declaration order, so a verifier that leaves
+# nested object keys in input order recomputes a different signing hash whenever
+# the input keys are not already Go-ordered.
 #
 # ActionRecord fields in Go struct-tag order. Source of truth:
 # https://github.com/luckyPipewrench/pipelock/blob/main/internal/receipt/canonical.go
@@ -117,7 +121,7 @@ _RECEIPT_FIELDS: list[tuple[str, bool, str | None]] = [
     # ext is absent, and would let ext be added or altered on a receipt without
     # changing this verifier's chain hash. Ordered last, omitempty, per the Go
     # struct.
-    ("ext", True, None),
+    ("ext", True, "raw_json"),
 ]
 
 # RedactionSummary fields, Go struct order (receipt.RedactionSummary).
@@ -272,6 +276,71 @@ _NESTED_REQUIRED_ZERO_VALUES: dict[str, dict[str, Any]] = {
 }
 
 
+class _RawJSON:
+    """Go json.RawMessage bytes after json.Marshal-style compaction."""
+
+    __slots__ = ("data",)
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+
+def raw_json_value(raw: str | bytes) -> _RawJSON:
+    """Return a RawMessage-compatible value for receipt-envelope canonicalization.
+
+    Go's json.RawMessage is not a decoded map. When a receipt is unmarshalled,
+    the raw bytes of ``ext`` are retained; when it is marshalled for
+    ReceiptHash, Go compacts those bytes and applies its default HTML-safe
+    escaping, but it does not sort keys or normalize number spellings inside
+    the RawMessage.
+    """
+
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                out.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                out.append(ch)
+                in_string = False
+                continue
+            if ch == "<":
+                out.append("\\u003c")
+                continue
+            if ch == ">":
+                out.append("\\u003e")
+                continue
+            if ch == "&":
+                out.append("\\u0026")
+                continue
+            if ch == "\u2028":
+                out.append("\\u2028")
+                continue
+            if ch == "\u2029":
+                out.append("\\u2029")
+                continue
+            out.append(ch)
+            continue
+
+        if ch == '"':
+            out.append(ch)
+            in_string = True
+        elif ch in " \t\r\n":
+            continue
+        else:
+            out.append(ch)
+    return _RawJSON("".join(out).encode("utf-8"))
+
+
 def _is_go_zero(value: Any) -> bool:
     """Return True if ``value`` matches Go's ``omitempty`` zero value.
 
@@ -347,6 +416,12 @@ def _order_object(
             value = zero_values[name]
         else:
             value = obj[name]
+        if nested == "raw_json":
+            # RawMessage omitempty only drops nil/empty bytes. JSON input with
+            # an explicit ext value, including null, false, 0, "", {}, or [],
+            # unmarshals to non-empty raw bytes and is therefore marshalled.
+            ordered[name] = value
+            continue
         pointer_like_struct = nested in _NESTED_OBJECT_FIELDS and isinstance(value, dict)
         if omitempty and not pointer_like_struct and _is_go_zero(value):
             continue
@@ -388,7 +463,33 @@ def _go_html_escape(serialized: str) -> str:
 
 def _to_canonical_bytes(obj: Any) -> bytes:
     """Serialize an ordered dict to canonical UTF-8 bytes."""
-    raw = json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    return _serialize_go_json(obj)
+
+
+def _serialize_go_json(value: Any) -> bytes:
+    if isinstance(value, _RawJSON):
+        return value.data
+    if isinstance(value, dict):
+        parts: list[bytes] = [b"{"]
+        first = True
+        for key, item in value.items():
+            if not first:
+                parts.append(b",")
+            first = False
+            parts.append(_serialize_go_json(str(key)))
+            parts.append(b":")
+            parts.append(_serialize_go_json(item))
+        parts.append(b"}")
+        return b"".join(parts)
+    if isinstance(value, (list, tuple)):
+        parts = [b"["]
+        for index, item in enumerate(value):
+            if index:
+                parts.append(b",")
+            parts.append(_serialize_go_json(item))
+        parts.append(b"]")
+        return b"".join(parts)
+    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     return _go_html_escape(raw).encode("utf-8")
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -17,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import pipelock_verify
 from pipelock_verify.__main__ import main
 from pipelock_verify._canonical import canonicalize_action_record, canonicalize_receipt
+from pipelock_verify._verify import _parse_receipt
 
 CONFORMANCE_DIR = Path(__file__).parent / "conformance"
 
@@ -820,6 +822,75 @@ def test_receipt_chain_hash_covers_the_unsigned_ext_bag():
     assert tagged != altered, "altering ext must change the receipt envelope hash"
     # ext is ordered last, matching the Go struct.
     assert tagged.decode().index('"ext"') > tagged.decode().index('"signer_key"')
+
+
+@pytest.mark.parametrize(
+    ("raw_ext", "want_ext"),
+    [
+        ('{"b":2,"a":1}', '{"b":2,"a":1}'),
+        ('{"s":"<&\u2028\u2029"}', '{"s":"\\u003c\\u0026\\u2028\\u2029"}'),
+        ('[ 1, {"z":0, "y":1} ]', '[1,{"z":0,"y":1}]'),
+        (
+            '{"n":1e+06,"big":123456789012345678901234567890}',
+            '{"n":1e+06,"big":123456789012345678901234567890}',
+        ),
+        ("null", "null"),
+        ("{}", "{}"),
+        ("[]", "[]"),
+        ("false", "false"),
+        ("0", "0"),
+        ('""', '""'),
+    ],
+)
+def test_receipt_ext_matches_go_rawmessage_compaction(raw_ext: str, want_ext: str) -> None:
+    """ext is RawMessage-like: present JSON zeros stay, inner order is not sorted."""
+
+    receipt = _sign_action_record(_valid_action_record())
+    raw = json.dumps(receipt, separators=(",", ":"))
+    raw = raw[:-1] + f',"ext":{raw_ext}' + "}"
+    parsed = _parse_receipt(raw)
+
+    canonical = canonicalize_receipt(parsed).decode()
+
+    assert canonical.endswith(f',"ext":{want_ext}}}')
+
+
+def test_receipt_ext_from_plain_dict_preserves_insertion_order_and_json_zero_values() -> None:
+    receipt = _sign_action_record(_valid_action_record())
+    receipt["ext"] = {"b": 2, "a": 1}
+
+    canonical = canonicalize_receipt(receipt).decode()
+
+    assert canonical.endswith(',"ext":{"b":2,"a":1}}')
+
+    ext_values: tuple[Any, ...] = (None, {}, [], False, 0, "")
+    for ext in ext_values:
+        receipt["ext"] = ext
+        assert ',"ext":' in canonicalize_receipt(receipt).decode()
+
+
+@pytest.mark.parametrize("detail_as_string", [False, True])
+def test_verify_chain_preserves_raw_ext_from_recorder_detail_shapes(
+    tmp_path: Path, detail_as_string: bool
+) -> None:
+    receipt = _sign_action_record(_valid_action_record())
+    raw_receipt = json.dumps(receipt, separators=(",", ":"))
+    raw_receipt = (
+        raw_receipt[:-1] + ',"ext":{"n":1e+06,"nested":{"b":2,"a":1},"zero":0,"empty":{}}' + "}"
+    )
+    expected_root = hashlib.sha256(canonicalize_receipt(_parse_receipt(raw_receipt))).hexdigest()
+
+    if detail_as_string:
+        detail = json.dumps(raw_receipt, separators=(",", ":"))
+    else:
+        detail = raw_receipt
+    path = tmp_path / "chain.jsonl"
+    path.write_text(f'{{"type":"action_receipt","detail":{detail}}}\n')
+
+    result = pipelock_verify.verify_chain(path)
+
+    assert result.valid, result.error
+    assert result.root_hash == expected_root
 
 
 def test_ext_stays_out_of_the_signed_action_record_projection():
