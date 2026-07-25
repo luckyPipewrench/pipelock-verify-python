@@ -39,6 +39,10 @@ GO_STRUCTS: tuple[str, ...] = (
     "shieldSummaryCanonicalV1",
 )
 
+# Any Go type named *CanonicalV1 is a signing projection this package must
+# mirror. Discovered rather than predeclared, so an addition on the Go side
+# cannot pass unnoticed.
+CANONICAL_STRUCT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*CanonicalV1$")
 STRUCT_RE = re.compile(r"^type\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s+struct\s*\{\s*$")
 FIELD_RE = re.compile(
     r"^(?P<name>[A-Z][A-Za-z0-9_]*)\s+(?P<type>.+?)\s+`json:\"(?P<tag>[^\"]+)\"`"
@@ -197,7 +201,12 @@ def extract_go_contract(
             index += 1
         if index >= len(lines):
             raise ContractParseError(f"unterminated Go struct {struct_name}")
-        if struct_name in wanted:
+        # Parse every canonical-v1 projection found, not just the predeclared
+        # ones. Restricting to a fixed list made the "unexpected struct" check
+        # below unreachable: a NEW signed projection added on the Go side would
+        # be skipped in silence and the gate would pass without a Python
+        # counterpart existing at all.
+        if struct_name in wanted or CANONICAL_STRUCT_RE.match(struct_name):
             contract[struct_name] = _parse_struct_fields(struct_name, body)
         index += 1
 

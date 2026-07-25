@@ -116,3 +116,23 @@ def test_gate_fails_closed_when_source_cannot_be_read(tmp_path):
 
     with pytest.raises(ContractFetchError):
         read_source_arg(str(missing_source))
+
+
+def test_gate_rejects_a_newly_added_go_canonical_projection():
+    """A NEW *CanonicalV1 struct on the Go side must fail the gate.
+
+    The parser originally walked a predeclared list of struct names, which made
+    the unexpected-struct branch unreachable: a signing projection added on the
+    Go side was skipped in silence and the gate passed while this package had no
+    counterpart for it. Structs are discovered now, so the branch can fire.
+    """
+    changed = BASE_GO_SOURCE + (
+        "\ntype brandNewThingCanonicalV1 struct {\n"
+        '    SecretField string `json:"secret_field"`\n'
+        "}\n"
+    )
+
+    with pytest.raises(ContractDriftError) as excinfo:
+        _check_test_source(changed)
+
+    assert "brandNewThingCanonicalV1" in str(excinfo.value)
