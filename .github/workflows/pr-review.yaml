@@ -1,0 +1,63 @@
+name: AI PR Review
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # Restrict to the repository owner account. The review runner is checked
+    # out from main and never executes code from the PR, but the job holds an
+    # API key, so the trigger keeps a permission gate beyond the body check.
+    if: >-
+      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.author_association == 'OWNER' &&
+      github.event.issue.pull_request &&
+      (github.event.comment.body == '/review' ||
+       github.event.comment.body == '/review deep' ||
+       github.event.comment.body == '/review tests' ||
+       github.event.comment.body == '/review docs')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted review runner
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --require-hashes -r .github/requirements-pr-review.txt
+
+      - name: Determine review mode
+        id: mode
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          case "$COMMENT_BODY" in
+            "/review deep")  echo "mode=deep" >> "$GITHUB_OUTPUT" ;;
+            "/review tests") echo "mode=tests" >> "$GITHUB_OUTPUT" ;;
+            "/review docs")  echo "mode=docs" >> "$GITHUB_OUTPUT" ;;
+            *)               echo "mode=default" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Run PR review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REVIEW_MODE: ${{ steps.mode.outputs.mode }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          PR_REVIEW_MODEL_FAST: gpt-5.4-mini
+          PR_REVIEW_MODEL_DEEP: gpt-5.5
+        run: python scripts/pr-review.py
