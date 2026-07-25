@@ -151,3 +151,9 @@ def test_v3_2_0_live_recorder_chain_verifies_with_pinned_key():
     assert result.final_seq == 10
     assert result.start_time == "2026-07-24T22:57:41.86819273Z"
     assert result.end_time == "2026-07-24T23:00:44.292030929Z"
+    # Pinned to the root hash the Go verifier independently computed for this
+    # exact chain (pipelock v3.2.0 `verify-receipt --chain`). Validity alone
+    # would not catch a divergence in the chain-hash construction: both
+    # verifiers can agree a chain is well formed while disagreeing on what it
+    # commits to. This is the parity assertion.
+    assert result.root_hash == "623d13a756891c52b6a4b3d400a95c3324da7b5c3b11c95446fb11aee2ea3063"

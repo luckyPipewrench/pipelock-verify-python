@@ -324,12 +324,6 @@ def _require_uint64(obj: dict[str, Any], name: str, where: str) -> str | None:
     return None
 
 
-def _require_int(obj: dict[str, Any], name: str, where: str) -> str | None:
-    if name in obj and (not isinstance(obj[name], int) or isinstance(obj[name], bool)):
-        return f"{where} {name} must be an integer"
-    return None
-
-
 def _require_bool(obj: dict[str, Any], name: str, where: str) -> str | None:
     if name in obj and not isinstance(obj[name], bool):
         return f"{where} {name} must be a boolean"
@@ -361,7 +355,7 @@ def _validate_redaction_shape(action_record: dict[str, Any]) -> str | None:
     for name in ("profile", "provider", "parser"):
         if err := _require_string(redaction, name, "redaction"):
             return err
-    if err := _require_int(redaction, "total_redactions", "redaction"):
+    if err := _require_int64(redaction, "total_redactions", "redaction"):
         return err
     if "by_class" in redaction and redaction["by_class"] is not None:
         by_class = redaction["by_class"]
@@ -370,8 +364,13 @@ def _validate_redaction_shape(action_record: dict[str, Any]) -> str | None:
         for key, value in by_class.items():
             if not isinstance(key, str):
                 return "redaction by_class keys must be strings"
-            if not isinstance(value, int) or isinstance(value, bool):
-                return "redaction by_class values must be integers"
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < -_INT64_MAX - 1
+                or value > _INT64_MAX
+            ):
+                return "redaction by_class values must be int64"
     return _require_bool(redaction, "cache_boundary_kept", "redaction")
 
 
@@ -400,7 +399,7 @@ def _validate_shield_shape(action_record: dict[str, Any]) -> str | None:
         "adaptive_signals_recorded",
         "adaptive_signal_max_per_body",
     ):
-        if err := _require_int(shield, name, "shield"):
+        if err := _require_int64(shield, name, "shield"):
             return err
     for name in ("fingerprint_shim_injected", "partial"):
         if err := _require_bool(shield, name, "shield"):

@@ -791,3 +791,45 @@ def test_verify_rejects_malformed_key_transition_even_with_valid_signature(marke
 
     assert not result.valid
     assert want in (result.error or "")
+
+
+def test_receipt_chain_hash_covers_the_unsigned_ext_bag():
+    """`ext` is unsigned but IS part of Go's chain hash.
+
+    Go's ReceiptHash is sha256 over json.Marshal(Receipt), and Receipt.Ext is a
+    marshalled field. A verifier that drops ext from the receipt envelope agrees
+    with Go only while ext is absent, and lets ext be attached or altered on a
+    receipt without changing the chain hash it commits to. ext stays out of the
+    SIGNED action-record projection; this is the envelope hash only.
+    """
+    base = {
+        "version": 1,
+        "action_record": {"version": 1},
+        "signature": "ed25519:aa",
+        "signer_key": "bb",
+    }
+    with_ext = dict(base) | {"ext": {"note": "advisory"}}
+    altered_ext = dict(base) | {"ext": {"note": "tampered"}}
+
+    bare = canonicalize_receipt(base)
+    tagged = canonicalize_receipt(with_ext)
+    altered = canonicalize_receipt(altered_ext)
+
+    assert b'"ext"' in tagged
+    assert bare != tagged, "ext must change the receipt envelope hash"
+    assert tagged != altered, "altering ext must change the receipt envelope hash"
+    # ext is ordered last, matching the Go struct.
+    assert tagged.decode().index('"ext"') > tagged.decode().index('"signer_key"')
+
+
+def test_ext_stays_out_of_the_signed_action_record_projection():
+    """ext is advisory and unsigned: it must never enter the signing input."""
+    ar = _valid_action_record()
+    ar["ext"] = {"note": "advisory"}
+
+    # ext is not an action_record field at all, so the shape gate rejects it.
+    receipt = _sign_action_record(ar)
+    result = pipelock_verify.verify(json.dumps(receipt))
+
+    assert not result.valid
+    assert "unknown signed field" in (result.error or "")

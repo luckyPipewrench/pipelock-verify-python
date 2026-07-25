@@ -109,6 +109,15 @@ _RECEIPT_FIELDS: list[tuple[str, bool, str | None]] = [
     ("action_record", False, "action_record"),
     ("signature", False, None),
     ("signer_key", False, None),
+    # Ext is the one tolerated unknown top-level surface on a v1 receipt: an
+    # UNSIGNED, advisory forward-compat bag that verification never consults.
+    # It is deliberately absent from the SIGNED action-record projection, but
+    # Go's ReceiptHash is sha256 over json.Marshal(Receipt), which DOES include
+    # ext. Omitting it here would make the chain hash agree with Go only while
+    # ext is absent, and would let ext be added or altered on a receipt without
+    # changing this verifier's chain hash. Ordered last, omitempty, per the Go
+    # struct.
+    ("ext", True, None),
 ]
 
 # RedactionSummary fields, Go struct order (receipt.RedactionSummary).
