@@ -1018,8 +1018,8 @@ def _verify_chain_list(
     if not receipts:
         return ChainResult(valid=True, receipt_count=0)
 
-    # v2 chain verification is a v0.3 follow-up. v0.2.0 surfaces v2
-    # envelopes via verify_evidence() one at a time. If a chain contains
+    # v2 chain verification is not implemented. v2 envelopes are surfaced
+    # via verify_evidence() one at a time. If a chain contains
     # any v2 receipt we fail closed rather than silently treating it as
     # v1, which would falsely fail every v2 chain. Mixed v1/v2 chains
     # are blocked for the same reason: chain-hash bridging across v1
@@ -1036,7 +1036,7 @@ def _verify_chain_list(
                 valid=False,
                 broken_at_seq=broken,
                 error=(
-                    "v2 chain verification not yet implemented in v0.2.0; "
+                    "v2 chain verification is not implemented; "
                     "verify v2 receipts individually with verify_evidence()"
                 ),
             )

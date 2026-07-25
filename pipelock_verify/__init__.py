@@ -30,7 +30,7 @@ Typical usage::
 
 Trust anchors are opt-in. Pass ``public_key_hex`` to pin a specific signer,
 or leave it empty to trust the key embedded in the receipt (chain mode then
-enforces signer consistency across every v1 receipt in the file). v0.2.0
+enforces signer consistency across every v1 receipt in the file). This release
 rejects EvidenceReceipt v2 in chain mode; verify v2 receipts individually
 with verify() or verify_evidence().
 
@@ -60,7 +60,7 @@ from ._verify import (
     verify_chain,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "PAYLOAD_AUTHORITY",

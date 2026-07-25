@@ -502,7 +502,7 @@ def _check_fields(
     Python ``int`` (not str), because the Go reference emits them as
     typed integers and the JCS preimage byte-shape differs.
 
-    NOTE: for v0.2.0 the type guard is limited to integer-shaped count
+    NOTE: the type guard is currently limited to integer-shaped count
     fields. Full per-field type schemas (string vs list-of-string vs
     nested object shape) are tracked as a v0.3 follow-up.
     """

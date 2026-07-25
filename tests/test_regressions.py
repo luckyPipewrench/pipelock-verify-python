@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -904,3 +905,22 @@ def test_ext_stays_out_of_the_signed_action_record_projection():
 
     assert not result.valid
     assert "unknown signed field" in (result.error or "")
+
+
+def test_dunder_version_matches_pyproject():
+    """`__version__` and the packaging version must not drift apart.
+
+    The release workflow checks the git tag against pyproject.toml, and nothing
+    checked pyproject.toml against `__version__`, so the package could ship
+    announcing a version it was not. This closes that side of the triangle.
+    """
+    # Parsed with a regex rather than tomllib, which is 3.11+ while this
+    # package still supports 3.10.
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    match = re.search(r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
+    assert match is not None, "could not find the version in pyproject.toml"
+    declared = match.group(1)
+
+    assert pipelock_verify.__version__ == declared, (
+        f"__version__ is {pipelock_verify.__version__} but pyproject.toml says {declared}"
+    )
