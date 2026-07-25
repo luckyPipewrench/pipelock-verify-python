@@ -37,6 +37,9 @@ from pipelock_verify._common import (
 )
 from pipelock_verify._verify import _compute_session_open_genesis, verify
 
+# Fast offline mirror guard. The authoritative live drift gate is
+# scripts/check_go_canonical_contract.py, which fetches Go's
+# internal/receipt/canonical.go at a resolved commit and fails closed.
 CANONICAL_GO_MESSAGE = (
     "Checked-in Python mirror of Go internal/receipt/canonical.go "
     "actionRecordCanonicalV1 drifted; refresh this list from Go origin/main."
