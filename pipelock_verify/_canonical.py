@@ -27,15 +27,20 @@ import json
 from typing import Any
 
 # Field specs are (json_name, has_omitempty, nested_kind). nested_kind is one
-# of None, "action_record", "redaction", "shield", or "taint_source" and tells
-# the orderer to recurse into a nested object (or, for "taint_source", into
-# each element of a nested array) so the nested object's keys are reordered to
-# the Go struct order too. Go re-marshals nested structs in declaration order,
-# so a verifier that leaves nested object keys in input order recomputes a
-# different signing hash whenever the input keys are not already Go-ordered.
+# of None, "action_record", "redaction", "shield", "taint_source",
+# "key_transition", "session_control", a session-control payload kind, or
+# "raw_json". Nested struct kinds tell the orderer to recurse into a nested
+# object (or, for "taint_source", into each element of a nested array) so the
+# nested object's keys are reordered to the Go struct order too. "raw_json"
+# models Go's json.RawMessage: it is compacted and HTML-escaped, but its inner
+# object key order and number spellings are preserved.
+#
+# Go re-marshals nested structs in declaration order, so a verifier that leaves
+# nested object keys in input order recomputes a different signing hash whenever
+# the input keys are not already Go-ordered.
 #
 # ActionRecord fields in Go struct-tag order. Source of truth:
-# https://github.com/luckyPipewrench/pipelock/blob/main/internal/receipt/action.go
+# https://github.com/luckyPipewrench/pipelock/blob/main/internal/receipt/canonical.go
 # The list MUST match that struct's field set, declaration order, and omitempty
 # semantics EXACTLY — including parent_action_id, the taint block, the contract
 # block, severity, redaction, and shield. Any omitted or reordered field breaks
@@ -57,6 +62,12 @@ _ACTION_RECORD_FIELDS: list[tuple[str, bool, str | None]] = [
     ("reversibility", False, None),
     ("policy_hash", False, None),
     ("verdict", False, None),
+    ("decision_phase", True, None),
+    ("defer_id", True, None),
+    ("resolution_policy", True, None),
+    ("resolution_source", True, None),
+    ("session_id", True, None),
+    ("session_id_original", True, None),
     ("session_taint_level", True, None),
     ("session_contaminated", True, None),
     ("recent_taint_sources", True, "taint_source"),
@@ -84,6 +95,9 @@ _ACTION_RECORD_FIELDS: list[tuple[str, bool, str | None]] = [
     ("request_id", True, None),
     ("chain_prev_hash", False, None),
     ("chain_seq", False, None),
+    ("run_nonce", True, None),
+    ("key_transition", True, "key_transition"),
+    ("session_control", True, "session_control"),
     ("venue", True, None),
     ("jurisdiction", True, None),
     ("rulebook_id", True, None),
@@ -99,6 +113,15 @@ _RECEIPT_FIELDS: list[tuple[str, bool, str | None]] = [
     ("action_record", False, "action_record"),
     ("signature", False, None),
     ("signer_key", False, None),
+    # Ext is the one tolerated unknown top-level surface on a v1 receipt: an
+    # UNSIGNED, advisory forward-compat bag that verification never consults.
+    # It is deliberately absent from the SIGNED action-record projection, but
+    # Go's ReceiptHash is sha256 over json.Marshal(Receipt), which DOES include
+    # ext. Omitting it here would make the chain hash agree with Go only while
+    # ext is absent, and would let ext be added or altered on a receipt without
+    # changing this verifier's chain hash. Ordered last, omitempty, per the Go
+    # struct.
+    ("ext", True, "raw_json"),
 ]
 
 # RedactionSummary fields, Go struct order (receipt.RedactionSummary).
@@ -141,12 +164,181 @@ _TAINT_SOURCE_FIELDS: list[tuple[str, bool, str | None]] = [
     ("match_reason", True, None),
 ]
 
+# KeyTransition fields, Go struct order (receipt.canonicalKeyTransitionV1).
+_KEY_TRANSITION_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("prior_signer_key", False, None),
+    ("prior_chain_seq", False, None),
+    ("prior_chain_hash", False, None),
+]
+
+# SessionControl fields, Go struct order (receipt.canonicalSessionControlV1).
+_SESSION_CONTROL_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("kind", False, None),
+    ("open", True, "session_open"),
+    ("heartbeat", True, "session_heartbeat"),
+    ("close", True, "session_close"),
+]
+
+# SessionOpen fields, Go struct order (receipt.sessionOpenCanonicalV1).
+_SESSION_OPEN_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("run_nonce", False, None),
+    ("open_nonce", False, None),
+    ("recorder_session", False, None),
+    ("policy_hash", False, None),
+    ("signer_key_epoch", False, None),
+    ("heartbeat_seconds", False, None),
+    ("chain_open_seq", False, None),
+    ("prior_chain_head", True, None),
+    ("prior_chain_seq", True, None),
+    ("genesis_hash", True, None),
+    ("genesis_anchor_head", True, None),
+    ("genesis_anchor_log", True, None),
+    ("posture_capsule_sha256", True, None),
+    ("posture_signer_key_id", True, None),
+    ("containment_nonce", True, None),
+    ("contained_uid", True, None),
+]
+
+# SessionHeartbeat fields, Go struct order (receipt.sessionHeartbeatCanonicalV1).
+_SESSION_HEARTBEAT_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("run_nonce", False, None),
+    ("open_nonce", False, None),
+    ("beat", False, None),
+    ("chain_head", False, None),
+    ("chain_seq_head", False, None),
+    ("heartbeat_time", False, None),
+    ("fsync_errors_gated", False, None),
+    ("durability_blocks", False, None),
+]
+
+# SessionClose fields, Go struct order (receipt.sessionCloseCanonicalV1).
+_SESSION_CLOSE_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("run_nonce", False, None),
+    ("open_nonce", False, None),
+    ("final_seq", False, None),
+    ("root_hash", False, None),
+    ("receipt_count", False, None),
+    ("close_reason", False, None),
+    ("fsync_errors_gated", False, None),
+    ("durability_blocks", False, None),
+]
+
 # Maps a nested_kind tag to its field list (object-valued nests only).
 _NESTED_OBJECT_FIELDS: dict[str, list[tuple[str, bool, str | None]]] = {
     "action_record": _ACTION_RECORD_FIELDS,
     "redaction": _REDACTION_FIELDS,
     "shield": _SHIELD_FIELDS,
+    "key_transition": _KEY_TRANSITION_FIELDS,
+    "session_control": _SESSION_CONTROL_FIELDS,
+    "session_open": _SESSION_OPEN_FIELDS,
+    "session_heartbeat": _SESSION_HEARTBEAT_FIELDS,
+    "session_close": _SESSION_CLOSE_FIELDS,
 }
+
+_NESTED_REQUIRED_ZERO_VALUES: dict[str, dict[str, Any]] = {
+    "key_transition": {
+        "prior_signer_key": "",
+        "prior_chain_seq": 0,
+        "prior_chain_hash": "",
+    },
+    "session_control": {
+        "kind": "",
+    },
+    "session_open": {
+        "run_nonce": "",
+        "open_nonce": "",
+        "recorder_session": "",
+        "policy_hash": "",
+        "signer_key_epoch": "",
+        "heartbeat_seconds": 0,
+        "chain_open_seq": 0,
+    },
+    "session_heartbeat": {
+        "run_nonce": "",
+        "open_nonce": "",
+        "beat": 0,
+        "chain_head": "",
+        "chain_seq_head": 0,
+        "heartbeat_time": "",
+        "fsync_errors_gated": 0,
+        "durability_blocks": 0,
+    },
+    "session_close": {
+        "run_nonce": "",
+        "open_nonce": "",
+        "final_seq": 0,
+        "root_hash": "",
+        "receipt_count": 0,
+        "close_reason": "",
+        "fsync_errors_gated": 0,
+        "durability_blocks": 0,
+    },
+}
+
+
+class _RawJSON:
+    """Go json.RawMessage bytes after json.Marshal-style compaction."""
+
+    __slots__ = ("data",)
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+
+def raw_json_value(raw: str | bytes) -> _RawJSON:
+    """Return a RawMessage-compatible value for receipt-envelope canonicalization.
+
+    Go's json.RawMessage is not a decoded map. When a receipt is unmarshalled,
+    the raw bytes of ``ext`` are retained; when it is marshalled for
+    ReceiptHash, Go compacts those bytes and applies its default HTML-safe
+    escaping, but it does not sort keys or normalize number spellings inside
+    the RawMessage.
+    """
+
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                out.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                out.append(ch)
+                in_string = False
+                continue
+            if ch == "<":
+                out.append("\\u003c")
+                continue
+            if ch == ">":
+                out.append("\\u003e")
+                continue
+            if ch == "&":
+                out.append("\\u0026")
+                continue
+            if ch == "\u2028":
+                out.append("\\u2028")
+                continue
+            if ch == "\u2029":
+                out.append("\\u2029")
+                continue
+            out.append(ch)
+            continue
+
+        if ch == '"':
+            out.append(ch)
+            in_string = True
+        elif ch in " \t\r\n":
+            continue
+        else:
+            out.append(ch)
+    return _RawJSON("".join(out).encode("utf-8"))
 
 
 def _is_go_zero(value: Any) -> bool:
@@ -196,12 +388,17 @@ def _normalize_maps(value: Any) -> Any:
 def _order_object(
     obj: dict[str, Any],
     fields: list[tuple[str, bool, str | None]],
+    *,
+    nested_kind: str | None = None,
+    emit_missing_required: bool = False,
 ) -> dict[str, Any]:
     """Return a new dict with ``obj``'s keys in Go's canonical struct order.
 
-    Missing fields are skipped. ``omitempty`` fields with zero values are
-    dropped. Unknown fields are ignored: Go's ``json.Unmarshal`` would drop
-    them, and the re-serialized canonical form should not include them.
+    Missing fields are skipped, except for non-omitempty fields inside a
+    present pointer-like nested struct: Go unmarshals that as a non-nil struct
+    pointer and re-marshals its zero fields. ``omitempty`` fields with zero
+    values are dropped. Unknown fields are ignored by this low-level
+    canonicalizer; verification rejects them before signature checks.
 
     Nested fields recurse so nested object keys are reordered to Go order too:
 
@@ -211,9 +408,22 @@ def _order_object(
     ordered: dict[str, Any] = {}
     for name, omitempty, nested in fields:
         if name not in obj:
+            if not emit_missing_required or omitempty or nested_kind is None:
+                continue
+            zero_values = _NESTED_REQUIRED_ZERO_VALUES.get(nested_kind, {})
+            if name not in zero_values:
+                continue
+            value = zero_values[name]
+        else:
+            value = obj[name]
+        if nested == "raw_json":
+            # RawMessage omitempty only drops nil/empty bytes. JSON input with
+            # an explicit ext value, including null, false, 0, "", {}, or [],
+            # unmarshals to non-empty raw bytes and is therefore marshalled.
+            ordered[name] = value
             continue
-        value = obj[name]
-        if omitempty and _is_go_zero(value):
+        pointer_like_struct = nested in _NESTED_OBJECT_FIELDS and isinstance(value, dict)
+        if omitempty and not pointer_like_struct and _is_go_zero(value):
             continue
         if nested == "taint_source" and isinstance(value, list):
             value = [
@@ -221,7 +431,12 @@ def _order_object(
                 for item in value
             ]
         elif nested in _NESTED_OBJECT_FIELDS and isinstance(value, dict):
-            value = _order_object(value, _NESTED_OBJECT_FIELDS[nested])
+            value = _order_object(
+                value,
+                _NESTED_OBJECT_FIELDS[nested],
+                nested_kind=nested,
+                emit_missing_required=True,
+            )
         else:
             # Non-struct value: sort any free-form map keys to match Go.
             value = _normalize_maps(value)
@@ -248,7 +463,33 @@ def _go_html_escape(serialized: str) -> str:
 
 def _to_canonical_bytes(obj: Any) -> bytes:
     """Serialize an ordered dict to canonical UTF-8 bytes."""
-    raw = json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    return _serialize_go_json(obj)
+
+
+def _serialize_go_json(value: Any) -> bytes:
+    if isinstance(value, _RawJSON):
+        return value.data
+    if isinstance(value, dict):
+        parts: list[bytes] = [b"{"]
+        first = True
+        for key, item in value.items():
+            if not first:
+                parts.append(b",")
+            first = False
+            parts.append(_serialize_go_json(str(key)))
+            parts.append(b":")
+            parts.append(_serialize_go_json(item))
+        parts.append(b"}")
+        return b"".join(parts)
+    if isinstance(value, (list, tuple)):
+        parts = [b"["]
+        for index, item in enumerate(value):
+            if index:
+                parts.append(b",")
+            parts.append(_serialize_go_json(item))
+        parts.append(b"]")
+        return b"".join(parts)
+    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     return _go_html_escape(raw).encode("utf-8")
 
 
