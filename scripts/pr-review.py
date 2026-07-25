@@ -236,10 +236,10 @@ def call_llm(diff: str, mode: str, system_prompt: str) -> str:
 
     if litellm_url and litellm_key:
         api_url = litellm_url.rstrip("/") + "/chat/completions"
-        api_key = litellm_key
+        bearer = litellm_key
     elif openai_key:
         api_url = "https://api.openai.com/v1/chat/completions"
-        api_key = openai_key
+        bearer = openai_key
     else:
         raise LLMReviewError(
             "No LLM API configured. Set LITELLM_BASE_URL + LITELLM_API_KEY "
@@ -247,7 +247,7 @@ def call_llm(diff: str, mode: str, system_prompt: str) -> str:
         )
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {bearer}",
         "Content-Type": "application/json",
     }
     is_deep = mode == "deep"
@@ -286,12 +286,12 @@ def post_comment(repo: str, pr_number: str, token: str, body: str) -> None:
 
 
 def main() -> None:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
     repo = os.environ.get("REPO", "")
     pr_number = os.environ.get("PR_NUMBER", "")
     mode = os.environ.get("REVIEW_MODE", "default")
 
-    if not all([token, repo, pr_number]):
+    if not all([gh_token, repo, pr_number]):
         print("Missing required environment variables", file=sys.stderr)
         sys.exit(1)
 
@@ -299,13 +299,15 @@ def main() -> None:
 
     # All other modes need the diff.
     try:
-        diff = get_pr_diff(repo, pr_number, token)
+        diff = get_pr_diff(repo, pr_number, gh_token)
     except requests.RequestException as e:
-        post_comment(repo, pr_number, token, f"**AI Review Error:** Failed to fetch PR diff: {e}")
+        post_comment(
+            repo, pr_number, gh_token, f"**AI Review Error:** Failed to fetch PR diff: {e}"
+        )
         sys.exit(1)
 
     if not diff.strip():
-        post_comment(repo, pr_number, token, "**AI Review:** No diff found for this PR.")
+        post_comment(repo, pr_number, gh_token, "**AI Review:** No diff found for this PR.")
         return
 
     diff = truncate_diff(diff)
@@ -323,7 +325,7 @@ def main() -> None:
     try:
         review = call_llm(diff, mode, system_prompt)
     except (requests.RequestException, LLMReviewError) as e:
-        post_comment(repo, pr_number, token, f"**AI Review Error:** {e}")
+        post_comment(repo, pr_number, gh_token, f"**AI Review Error:** {e}")
         sys.exit(1)
 
     model_name = os.environ.get(
@@ -342,7 +344,7 @@ def main() -> None:
     # actually typed.
     cmd = "/review" if mode == "default" else f"/review {mode}"
     header = f"## AI Review: {label} (`{cmd}`)\n\n**Model:** `{model_name}`\n\n---\n\n"
-    post_comment(repo, pr_number, token, header + review)
+    post_comment(repo, pr_number, gh_token, header + review)
     print("Review posted.")
 
 
