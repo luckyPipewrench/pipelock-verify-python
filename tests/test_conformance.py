@@ -132,6 +132,127 @@ def test_broken_chain_individual_signatures_valid(test_key_hex):
         assert result.valid, f"receipt {i} sig invalid: {result.error}"
 
 
+def test_rotated_chain_verifies_from_one_root_plus_endorsement(test_key_hex):
+    endorsement = pipelock_verify.load_rotation_endorsement(
+        CONFORMANCE_DIR / "g1-rotation-endorsement.json"
+    )
+    result = pipelock_verify.verify_chain(
+        CONFORMANCE_DIR / "g1-rotated-close-count-valid.jsonl",
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=[endorsement],
+    )
+    assert result.valid, result.error
+    assert result.receipt_count == 6
+    assert result.final_seq == 2
+
+
+def test_twice_rotated_chain_verifies_from_one_root_plus_both_endorsements(
+    test_key_hex,
+):
+    endorsements = [
+        pipelock_verify.load_rotation_endorsement(CONFORMANCE_DIR / "g1-rotation-endorsement.json"),
+        pipelock_verify.load_rotation_endorsement(
+            CONFORMANCE_DIR / "g1-rotation-endorsement-2.json"
+        ),
+    ]
+    result = pipelock_verify.verify_chain(
+        CONFORMANCE_DIR / "g1-rotated-twice-valid.jsonl",
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=endorsements,
+    )
+    assert result.valid, result.error
+    assert result.receipt_count == 9
+
+
+def test_rotation_endorsement_trust_fails_closed(test_key_hex):
+    path = CONFORMANCE_DIR / "g1-rotated-close-count-valid.jsonl"
+    endorsement = pipelock_verify.load_rotation_endorsement(
+        CONFORMANCE_DIR / "g1-rotation-endorsement.json"
+    )
+
+    missing = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+    )
+    assert not missing.valid
+    assert "does not match receipt boundary" in (missing.error or "")
+
+    altered = {
+        **vars(endorsement),
+        "prior_tail_hash": "0" * 64,
+    }
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="signature verification failed",
+    ):
+        pipelock_verify.verify_rotation_endorsement(altered)
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="canonical UTC RFC3339Nano",
+    ):
+        pipelock_verify.verify_rotation_endorsement(
+            {
+                **vars(endorsement),
+                "rotated_at": "2026-02-30T12:00:00Z",
+            }
+        )
+
+    duplicate = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=[endorsement, endorsement],
+    )
+    assert not duplicate.valid
+    assert "multiple rotation endorsements" in (duplicate.error or "")
+
+    second = pipelock_verify.load_rotation_endorsement(
+        CONFORMANCE_DIR / "g1-rotation-endorsement-2.json"
+    )
+    replayed = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=[endorsement, second],
+    )
+    assert not replayed.valid
+    assert "unused rotation endorsement" in (replayed.error or "")
+
+    cross_session = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="other-session",
+        rotation_endorsements=[endorsement],
+    )
+    assert not cross_session.valid
+    assert "signed recorder session" in (cross_session.error or "")
+
+
+def test_rotation_endorsement_file_rejects_duplicate_unknown_and_trailing_fields(
+    tmp_path,
+):
+    source = (CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text().strip()
+    cases = [
+        (
+            source.replace('"version": 1,', '"version": 1, "version": 1,'),
+            "duplicate object key",
+        ),
+        (
+            source.replace("\n}", ',\n  "trusted": true\n}'),
+            "unknown field trusted",
+        ),
+        (f"{source}\n{{}}", "unmarshal rotation endorsement"),
+    ]
+    for index, (body, error) in enumerate(cases):
+        path = tmp_path / f"bad-{index}.json"
+        path.write_text(body)
+        with pytest.raises(pipelock_verify.InvalidReceiptError, match=error):
+            pipelock_verify.load_rotation_endorsement(path)
+
+
 def test_v3_2_0_live_recorder_chain_verifies_with_pinned_key():
     """A real v3.2.0 recorder log must verify end-to-end.
 

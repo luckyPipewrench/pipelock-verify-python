@@ -78,12 +78,38 @@ consistency check in Go's `receipt.VerifyChain`.
 `verify()` or `verify_evidence()`; v2 chain verification is reserved for a
 follow-up release once the cross-version chain-linking rules are specified.
 
+For an ActionReceipt v1 chain that rotated signing keys, pin the original root
+and supply one old-key-signed endorsement for each rotation boundary:
+
+```python
+import pipelock_verify
+
+endorsement = pipelock_verify.load_rotation_endorsement(
+    "receipt-rotation-2026-07-30.json"
+)
+chain = pipelock_verify.verify_chain(
+    "evidence-proxy.jsonl",
+    public_key_hex="4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678",
+    session_id="proxy",
+    rotation_endorsements=[endorsement],
+)
+```
+
+The endorsement is verified under the retiring key and bound to the exact
+prior sequence, tail hash, recorder session, and successor key. Missing,
+altered, duplicate, replayed, cross-session, and unused endorsements fail
+closed.
+
 ### CLI
 
 ```bash
 python -m pipelock_verify receipt.json
 python -m pipelock_verify evidence.jsonl
 python -m pipelock_verify evidence.jsonl --key 70b991eb77816fc4...
+python -m pipelock_verify evidence.jsonl \
+  --key 4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678 \
+  --session-id proxy \
+  --rotation-endorsement receipt-rotation-2026-07-30.json
 ```
 
 Exit codes match `pipelock verify-receipt`: 0 on success, 1 on failure.

@@ -52,6 +52,11 @@ from ._evidence import (
     evidence_receipt_hash,
     verify_evidence,
 )
+from ._rotation import (
+    RotationEndorsement,
+    load_rotation_endorsement,
+    verify_rotation_endorsement,
+)
 from ._verify import (
     ChainResult,
     InvalidReceiptError,
@@ -60,7 +65,7 @@ from ._verify import (
     verify_chain,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "PAYLOAD_AUTHORITY",
@@ -71,12 +76,15 @@ __all__ = [
     "DirectoryKey",
     "EvidenceVerifyResult",
     "InvalidReceiptError",
+    "RotationEndorsement",
     "VerifyResult",
     "__version__",
     "evidence_receipt_hash",
     "fetch_directory",
+    "load_rotation_endorsement",
     "parse_directory",
     "verify",
     "verify_chain",
     "verify_evidence",
+    "verify_rotation_endorsement",
 ]
