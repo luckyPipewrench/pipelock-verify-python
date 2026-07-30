@@ -1109,7 +1109,6 @@ def _verify_chain_list(
     # When no key is pinned, lock to the first receipt's signer_key so an
     # attacker can't splice receipts from a second signer into the chain.
     expected_key = str(public_key_hex or receipts[0].get("signer_key", "")).lower()
-    root_key = expected_key.lower()
 
     prev_hash: str | None = None
     prior_segment_seq: int | None = None
@@ -1125,6 +1124,12 @@ def _verify_chain_list(
         ar = receipt.get("action_record") or {}
         seq = ar.get("chain_seq", i)
         marker = ar.get("key_transition")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0 or seq > _UINT64_MAX:
+            return ChainResult(
+                valid=False,
+                broken_at_seq=i,
+                error=f"seq {i}: signature: chain_seq must be a uint64",
+            )
 
         if i == 0:
             if marker is not None:
@@ -1136,7 +1141,13 @@ def _verify_chain_list(
                         f"{seq}: chain starts at a key_transition segment without the prior segment"
                     ),
                 )
-            segment_base_seq = seq
+            if seq != 0:
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
+                    error=f"seq {seq}: root receipt segment must start at chain_seq 0",
+                )
+            segment_base_seq = 0
         elif marker is not None:
             if seq != 0:
                 return ChainResult(
@@ -1206,7 +1217,7 @@ def _verify_chain_list(
                 )
             if matches:
                 used_endorsements.add(matches[0])
-            if successor != root_key and not matches:
+            if not matches:
                 return ChainResult(
                     valid=False,
                     broken_at_seq=seq,

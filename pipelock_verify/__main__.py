@@ -107,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--rotation-endorsement",
         action="append",
-        default=[],
+        default=None,
         type=Path,
         metavar="FILE",
         help="old-key-signed rotation endorsement; repeat for each rotation boundary",
@@ -131,7 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             endorsements = [
                 load_rotation_endorsement(endorsement_path)
-                for endorsement_path in args.rotation_endorsement
+                for endorsement_path in (args.rotation_endorsement or [])
             ]
         except (InvalidReceiptError, UnicodeDecodeError) as exc:
             print(f"CHAIN BROKEN: {path}")

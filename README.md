@@ -100,6 +100,10 @@ prior sequence, tail hash, recorder session, and successor key. Missing,
 altered, duplicate, replayed, cross-session, and unused endorsements fail
 closed.
 
+`session_id` must match `recorder_session` in every signed `session_open`, and
+the root segment must contain one. A chain without that signed session binding
+cannot be verified with endorsements.
+
 ### CLI
 
 ```bash

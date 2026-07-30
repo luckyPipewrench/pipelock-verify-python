@@ -12,8 +12,10 @@ import json
 from pathlib import Path
 
 import pytest
+from cryptography.exceptions import UnsupportedAlgorithm
 
 import pipelock_verify
+import pipelock_verify._rotation as rotation_module
 
 CONFORMANCE_DIR = Path(__file__).parent / "conformance"
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -231,6 +233,23 @@ def test_rotation_endorsement_trust_fails_closed(test_key_hex):
     assert "signed recorder session" in (cross_session.error or "")
 
 
+@pytest.mark.parametrize("failure", [ValueError("bad key"), UnsupportedAlgorithm("unsupported")])
+def test_rotation_endorsement_wraps_signer_key_load_failures(monkeypatch, failure):
+    endorsement = json.loads((CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text())
+
+    class FailingPublicKey:
+        @staticmethod
+        def from_public_bytes(_key):
+            raise failure
+
+    monkeypatch.setattr(rotation_module, "Ed25519PublicKey", FailingPublicKey)
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="rotation endorsement signer key is invalid",
+    ):
+        pipelock_verify.verify_rotation_endorsement(endorsement)
+
+
 def test_rotation_endorsement_file_rejects_duplicate_unknown_and_trailing_fields(
     tmp_path,
 ):
@@ -251,6 +270,11 @@ def test_rotation_endorsement_file_rejects_duplicate_unknown_and_trailing_fields
         path.write_text(body)
         with pytest.raises(pipelock_verify.InvalidReceiptError, match=error):
             pipelock_verify.load_rotation_endorsement(path)
+
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"{" + b" " * (64 * 1024))
+    with pytest.raises(pipelock_verify.InvalidReceiptError, match="exceeds 65536 bytes"):
+        pipelock_verify.load_rotation_endorsement(oversized)
 
 
 def test_v3_2_0_live_recorder_chain_verifies_with_pinned_key():

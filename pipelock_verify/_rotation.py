@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from ._common import InvalidReceiptError, _is_valid_rfc3339, loads_no_duplicate_keys
@@ -197,9 +197,11 @@ def verify_rotation_endorsement(
         raise InvalidReceiptError("invalid endorsement signature")
     digest = hashlib.sha256(_DOMAIN + _canonical_bytes(endorsement)).digest()
     try:
-        Ed25519PublicKey.from_public_bytes(bytes.fromhex(endorsement.prior_signer_key)).verify(
-            signature, digest
-        )
+        public_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(endorsement.prior_signer_key))
+    except (ValueError, UnsupportedAlgorithm) as exc:
+        raise InvalidReceiptError("rotation endorsement signer key is invalid") from exc
+    try:
+        public_key.verify(signature, digest)
     except InvalidSignature as exc:
         raise InvalidReceiptError("rotation endorsement signature verification failed") from exc
     return endorsement
@@ -209,7 +211,8 @@ def load_rotation_endorsement(path: str | Path) -> RotationEndorsement:
     """Read and verify one bounded endorsement file."""
     file = Path(path)
     try:
-        data = file.read_bytes()
+        with file.open("rb") as handle:
+            data = handle.read(_MAX_BYTES + 1)
     except OSError as exc:
         raise InvalidReceiptError(f"read rotation endorsement: {exc}") from exc
     return verify_rotation_endorsement(data)
