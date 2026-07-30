@@ -323,6 +323,34 @@ def test_rotation_endorsement_wraps_malformed_public_inputs():
         pipelock_verify.verify_rotation_endorsement(malformed)
 
 
+def test_rotation_chain_rejects_non_object_action_record(tmp_path, test_key_hex):
+    path = tmp_path / "malformed-action-record.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "action_record": ["not", "an", "object"],
+                "signature": f"ed25519:{'0' * 128}",
+                "signer_key": test_key_hex,
+            }
+        )
+    )
+    endorsement = pipelock_verify.load_rotation_endorsement(
+        CONFORMANCE_DIR / "g1-rotation-endorsement.json"
+    )
+
+    result = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=[endorsement],
+    )
+
+    assert not result.valid
+    assert result.broken_at_seq == 0
+    assert "missing or invalid action_record" in (result.error or "")
+
+
 def test_v3_2_0_live_recorder_chain_verifies_with_pinned_key():
     """A real v3.2.0 recorder log must verify end-to-end.
 

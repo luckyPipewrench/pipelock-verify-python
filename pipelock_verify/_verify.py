@@ -1065,6 +1065,17 @@ def _verify_chain_list(
                 ),
             )
 
+    action_records: list[dict[str, Any]] = []
+    for i, receipt in enumerate(receipts):
+        action_record = receipt.get("action_record")
+        if not isinstance(action_record, dict):
+            return ChainResult(
+                valid=False,
+                broken_at_seq=i,
+                error=f"seq {i}: missing or invalid action_record",
+            )
+        action_records.append(action_record)
+
     if rotation_endorsements:
         if public_key_hex is None or not public_key_hex.strip():
             return ChainResult(
@@ -1079,14 +1090,14 @@ def _verify_chain_list(
         first_boundary = next(
             (
                 index
-                for index, receipt in enumerate(receipts[1:], start=1)
-                if (receipt.get("action_record") or {}).get("key_transition") is not None
+                for index, action_record in enumerate(action_records[1:], start=1)
+                if action_record.get("key_transition") is not None
             ),
             len(receipts),
         )
         root_open_found = False
-        for index, receipt in enumerate(receipts):
-            open_payload = _session_control_open(receipt.get("action_record") or {})
+        for index, action_record in enumerate(action_records):
+            open_payload = _session_control_open(action_record)
             if open_payload is None:
                 continue
             recorder_session = open_payload.get("recorder_session", "")
@@ -1121,7 +1132,7 @@ def _verify_chain_list(
     segment_receipt_count = 0
     used_endorsements: set[int] = set()
     for i, receipt in enumerate(receipts):
-        ar = receipt.get("action_record") or {}
+        ar = action_records[i]
         seq = ar.get("chain_seq", i)
         marker = ar.get("key_transition")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0 or seq > _UINT64_MAX:
@@ -1197,8 +1208,7 @@ def _verify_chain_list(
                     ),
                 )
             successor = str(receipt.get("signer_key", "")).lower()
-            prior_receipt = receipts[i - 1]
-            prior_ar = prior_receipt.get("action_record") or {}
+            prior_ar = action_records[i - 1]
             matches = [
                 endorsement_index
                 for endorsement_index, endorsement in enumerate(rotation_endorsements)
@@ -1278,7 +1288,7 @@ def _verify_chain_list(
                     ar,
                     open_payload,
                     prev_hash,
-                    receipts[i - 1].get("action_record", {}).get("chain_seq", i - 1),
+                    action_records[i - 1].get("chain_seq", i - 1),
                 )
                 if restart_error is not None:
                     return ChainResult(
@@ -1320,8 +1330,8 @@ def _verify_chain_list(
             error="unused rotation endorsement does not match a required boundary",
         )
 
-    first_ar = receipts[0].get("action_record") or {}
-    last_ar = receipts[-1].get("action_record") or {}
+    first_ar = action_records[0]
+    last_ar = action_records[-1]
     return ChainResult(
         valid=True,
         receipt_count=len(receipts),
