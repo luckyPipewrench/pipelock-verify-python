@@ -31,6 +31,7 @@ _FIELDS = frozenset(
     }
 )
 _LOWER_HEX_32 = re.compile(r"^[0-9a-f]{64}$")
+_ED25519_SIGNATURE = re.compile(r"^ed25519:[0-9a-fA-F]{128}$")
 _CANONICAL_UTC = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{0,8}[1-9])?Z$"
@@ -87,6 +88,8 @@ def _require_hex(value: Any, field: str) -> str:
 
 
 def _decode(value: dict[str, Any]) -> RotationEndorsement:
+    if any(not isinstance(name, str) for name in value):
+        raise InvalidReceiptError("rotation endorsement field names must be strings")
     unknown = set(value) - _FIELDS
     if unknown:
         raise InvalidReceiptError(
@@ -98,7 +101,7 @@ def _decode(value: dict[str, Any]) -> RotationEndorsement:
             f"rotation endorsement is missing required field {sorted(missing)[0]}"
         )
     version = value["version"]
-    if isinstance(version, bool) or version != _VERSION:
+    if isinstance(version, bool) or not isinstance(version, int) or version != _VERSION:
         raise InvalidReceiptError(f"unsupported rotation endorsement version {version!r}")
     prior_final_seq = value["prior_final_seq"]
     if (
@@ -172,7 +175,11 @@ def verify_rotation_endorsement(
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise InvalidReceiptError(f"unmarshal rotation endorsement: {exc}") from exc
         elif isinstance(source, str):
-            if len(source.encode()) > _MAX_BYTES:
+            try:
+                source_size = len(source.encode())
+            except UnicodeEncodeError as exc:
+                raise InvalidReceiptError(f"unmarshal rotation endorsement: {exc}") from exc
+            if source_size > _MAX_BYTES:
                 raise InvalidReceiptError(f"rotation endorsement exceeds {_MAX_BYTES} bytes")
             try:
                 parsed = loads_no_duplicate_keys(source)
@@ -185,10 +192,8 @@ def verify_rotation_endorsement(
         if not isinstance(parsed, dict):
             raise InvalidReceiptError("rotation endorsement must be a JSON object")
         endorsement = _decode(parsed)
-    if not endorsement.endorsement.startswith(_SIGNATURE_PREFIX):
-        raise InvalidReceiptError(
-            f"invalid endorsement signature format: missing {_SIGNATURE_PREFIX} prefix"
-        )
+    if _ED25519_SIGNATURE.fullmatch(endorsement.endorsement) is None:
+        raise InvalidReceiptError("invalid endorsement signature")
     try:
         signature = bytes.fromhex(endorsement.endorsement[len(_SIGNATURE_PREFIX) :])
     except ValueError as exc:

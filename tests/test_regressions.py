@@ -793,6 +793,7 @@ def test_verify_chain_rejects_session_close_with_wrong_root_hash(tmp_path):
         ({"prior_signer_key": 123}, "key_transition prior_signer_key must be a string"),
         ({"prior_chain_hash": 123}, "key_transition prior_chain_hash must be a string"),
         ({"prior_chain_seq": -1}, "key_transition prior_chain_seq must be a uint64"),
+        ({"prior_chain_seq": 1.0}, "key_transition prior_chain_seq must be a uint64"),
         ({"prior_chain_seq": True}, "key_transition prior_chain_seq must be a uint64"),
         ("not-an-object", "key_transition must be an object"),
     ],

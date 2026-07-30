@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.exceptions import UnsupportedAlgorithm
@@ -275,6 +276,51 @@ def test_rotation_endorsement_file_rejects_duplicate_unknown_and_trailing_fields
     oversized.write_bytes(b"{" + b" " * (64 * 1024))
     with pytest.raises(pipelock_verify.InvalidReceiptError, match="exceeds 65536 bytes"):
         pipelock_verify.load_rotation_endorsement(oversized)
+
+
+@pytest.mark.parametrize("version", ["1.0", "1e0", '"1"'])
+def test_rotation_endorsement_rejects_non_integer_version_encodings(version):
+    source = (CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text()
+    malformed = source.replace('"version": 1,', f'"version": {version},', 1)
+
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="unsupported rotation endorsement version",
+    ):
+        pipelock_verify.verify_rotation_endorsement(malformed)
+
+
+def test_rotation_endorsement_rejects_whitespace_in_signature_hex():
+    endorsement = json.loads((CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text())
+    signature = endorsement["endorsement"]
+    endorsement["endorsement"] = f"{signature[:20]} {signature[20:]}"
+
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="invalid endorsement signature",
+    ):
+        pipelock_verify.verify_rotation_endorsement(endorsement)
+
+
+def test_rotation_endorsement_wraps_malformed_public_inputs():
+    endorsement: dict[Any, Any] = json.loads(
+        (CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text()
+    )
+    endorsement["unexpected"] = True
+    endorsement[1] = True
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="field names must be strings",
+    ):
+        pipelock_verify.verify_rotation_endorsement(endorsement)
+
+    source = (CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text()
+    malformed = source.replace("conformance-session", "conformance-\ud800session")
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="unmarshal rotation endorsement",
+    ):
+        pipelock_verify.verify_rotation_endorsement(malformed)
 
 
 def test_v3_2_0_live_recorder_chain_verifies_with_pinned_key():
