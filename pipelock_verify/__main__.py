@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from ._common import InvalidReceiptError
+from ._rotation import load_rotation_endorsement
 from ._verify import ChainResult, VerifyResult, verify, verify_chain
 
 
@@ -98,6 +100,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="force single or chain mode; default auto-detects from file suffix",
     )
     parser.add_argument(
+        "--session-id",
+        default="proxy",
+        help="signed recorder session for rotation endorsements; default proxy",
+    )
+    parser.add_argument(
+        "--rotation-endorsement",
+        action="append",
+        default=None,
+        type=Path,
+        metavar="FILE",
+        help="old-key-signed rotation endorsement; repeat for each rotation boundary",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"pipelock-verify {__version__}",
@@ -113,7 +128,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode = args.mode if args.mode != "auto" else _detect_mode(path)
 
     if mode == "chain":
-        chain_result = verify_chain(path, args.public_key_hex)
+        try:
+            endorsements = [
+                load_rotation_endorsement(endorsement_path)
+                for endorsement_path in (args.rotation_endorsement or [])
+            ]
+        except (InvalidReceiptError, UnicodeDecodeError) as exc:
+            print(f"CHAIN BROKEN: {path}")
+            print(f"  Error:    {exc}")
+            return 1
+        chain_result = verify_chain(
+            path,
+            args.public_key_hex,
+            session_id=args.session_id,
+            rotation_endorsements=endorsements,
+        )
         # Empty files are rejected at the CLI layer to match the Go CLI's
         # behavior (internal/cli/signing/receipt.go returns an error when
         # the extracted receipt list is empty). The library function keeps

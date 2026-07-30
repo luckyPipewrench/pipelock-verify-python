@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-30
+
+### Added
+
+- **Old-key-endorsed ActionReceipt rotation verification.** `verify_chain()`
+  accepts a pinned root, signed recorder session, and rotation
+  endorsements. It verifies each endorsement under the retiring key, binds it
+  to the exact prior sequence and tail hash, and authorizes the successor key.
+  Missing, altered, duplicate, cross-session, replayed, boundary-mismatched,
+  unknown-field, duplicate-key, and trailing-token endorsements fail closed.
+- **Rotation endorsement API and CLI.** `load_rotation_endorsement()` and
+  `verify_rotation_endorsement()` expose strict standalone verification. The
+  CLI accepts repeatable `--rotation-endorsement FILE` plus `--session-id`.
+- **Go-generated rotation conformance fixtures.** Python verifies the same
+  rotated chain and endorsement consumed by the Go, TypeScript, and Rust
+  implementations.
+
 ## [0.3.0] - 2026-07-24
 
 ### Fixed

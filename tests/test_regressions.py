@@ -404,6 +404,19 @@ def test_verify_chain_rejects_negative_chain_seq_even_with_valid_signature(tmp_p
     assert "chain_seq must be a uint64" in (result.error or "")
 
 
+def test_verify_chain_rejects_truncated_legacy_root_segment(tmp_path):
+    ar = _valid_action_record()
+    ar["action_id"] = "truncated-root-segment"
+    ar["chain_seq"] = 7
+    receipt = _sign_action_record(ar)
+
+    result = pipelock_verify.verify_chain(_write_signed_chain(tmp_path, receipt))
+
+    assert not result.valid
+    assert result.broken_at_seq == 7
+    assert "root receipt segment must start at chain_seq 0" in (result.error or "")
+
+
 @pytest.mark.parametrize(
     ("session_control", "want"),
     [
@@ -780,6 +793,7 @@ def test_verify_chain_rejects_session_close_with_wrong_root_hash(tmp_path):
         ({"prior_signer_key": 123}, "key_transition prior_signer_key must be a string"),
         ({"prior_chain_hash": 123}, "key_transition prior_chain_hash must be a string"),
         ({"prior_chain_seq": -1}, "key_transition prior_chain_seq must be a uint64"),
+        ({"prior_chain_seq": 1.0}, "key_transition prior_chain_seq must be a uint64"),
         ({"prior_chain_seq": True}, "key_transition prior_chain_seq must be a uint64"),
         ("not-an-object", "key_transition must be an object"),
     ],

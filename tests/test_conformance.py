@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+from cryptography.exceptions import UnsupportedAlgorithm
 
 import pipelock_verify
+import pipelock_verify._rotation as rotation_module
 
 CONFORMANCE_DIR = Path(__file__).parent / "conformance"
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -130,6 +133,222 @@ def test_broken_chain_individual_signatures_valid(test_key_hex):
     for i, line in enumerate(raw.strip().split("\n")):
         result = pipelock_verify.verify(line, public_key_hex=test_key_hex)
         assert result.valid, f"receipt {i} sig invalid: {result.error}"
+
+
+def test_rotated_chain_verifies_from_one_root_plus_endorsement(test_key_hex):
+    endorsement = pipelock_verify.load_rotation_endorsement(
+        CONFORMANCE_DIR / "g1-rotation-endorsement.json"
+    )
+    result = pipelock_verify.verify_chain(
+        CONFORMANCE_DIR / "g1-rotated-close-count-valid.jsonl",
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=[endorsement],
+    )
+    assert result.valid, result.error
+    assert result.receipt_count == 6
+    assert result.final_seq == 2
+
+
+def test_twice_rotated_chain_verifies_from_one_root_plus_both_endorsements(
+    test_key_hex,
+):
+    endorsements = [
+        pipelock_verify.load_rotation_endorsement(CONFORMANCE_DIR / "g1-rotation-endorsement.json"),
+        pipelock_verify.load_rotation_endorsement(
+            CONFORMANCE_DIR / "g1-rotation-endorsement-2.json"
+        ),
+    ]
+    result = pipelock_verify.verify_chain(
+        CONFORMANCE_DIR / "g1-rotated-twice-valid.jsonl",
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=endorsements,
+    )
+    assert result.valid, result.error
+    assert result.receipt_count == 9
+
+
+def test_rotation_endorsement_trust_fails_closed(test_key_hex):
+    path = CONFORMANCE_DIR / "g1-rotated-close-count-valid.jsonl"
+    endorsement = pipelock_verify.load_rotation_endorsement(
+        CONFORMANCE_DIR / "g1-rotation-endorsement.json"
+    )
+
+    missing = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+    )
+    assert not missing.valid
+    assert "does not match receipt boundary" in (missing.error or "")
+
+    altered = {
+        **vars(endorsement),
+        "prior_tail_hash": "0" * 64,
+    }
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="signature verification failed",
+    ):
+        pipelock_verify.verify_rotation_endorsement(altered)
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="canonical UTC RFC3339Nano",
+    ):
+        pipelock_verify.verify_rotation_endorsement(
+            {
+                **vars(endorsement),
+                "rotated_at": "2026-02-30T12:00:00Z",
+            }
+        )
+
+    duplicate = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=[endorsement, endorsement],
+    )
+    assert not duplicate.valid
+    assert "multiple rotation endorsements" in (duplicate.error or "")
+
+    second = pipelock_verify.load_rotation_endorsement(
+        CONFORMANCE_DIR / "g1-rotation-endorsement-2.json"
+    )
+    replayed = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=[endorsement, second],
+    )
+    assert not replayed.valid
+    assert "unused rotation endorsement" in (replayed.error or "")
+
+    cross_session = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="other-session",
+        rotation_endorsements=[endorsement],
+    )
+    assert not cross_session.valid
+    assert "signed recorder session" in (cross_session.error or "")
+
+
+@pytest.mark.parametrize("failure", [ValueError("bad key"), UnsupportedAlgorithm("unsupported")])
+def test_rotation_endorsement_wraps_signer_key_load_failures(monkeypatch, failure):
+    endorsement = json.loads((CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text())
+
+    class FailingPublicKey:
+        @staticmethod
+        def from_public_bytes(_key):
+            raise failure
+
+    monkeypatch.setattr(rotation_module, "Ed25519PublicKey", FailingPublicKey)
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="rotation endorsement signer key is invalid",
+    ):
+        pipelock_verify.verify_rotation_endorsement(endorsement)
+
+
+def test_rotation_endorsement_file_rejects_duplicate_unknown_and_trailing_fields(
+    tmp_path,
+):
+    source = (CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text().strip()
+    cases = [
+        (
+            source.replace('"version": 1,', '"version": 1, "version": 1,'),
+            "duplicate object key",
+        ),
+        (
+            source.replace("\n}", ',\n  "trusted": true\n}'),
+            "unknown field trusted",
+        ),
+        (f"{source}\n{{}}", "unmarshal rotation endorsement"),
+    ]
+    for index, (body, error) in enumerate(cases):
+        path = tmp_path / f"bad-{index}.json"
+        path.write_text(body)
+        with pytest.raises(pipelock_verify.InvalidReceiptError, match=error):
+            pipelock_verify.load_rotation_endorsement(path)
+
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"{" + b" " * (64 * 1024))
+    with pytest.raises(pipelock_verify.InvalidReceiptError, match="exceeds 65536 bytes"):
+        pipelock_verify.load_rotation_endorsement(oversized)
+
+
+@pytest.mark.parametrize("version", ["1.0", "1e0", '"1"'])
+def test_rotation_endorsement_rejects_non_integer_version_encodings(version):
+    source = (CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text()
+    malformed = source.replace('"version": 1,', f'"version": {version},', 1)
+
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="unsupported rotation endorsement version",
+    ):
+        pipelock_verify.verify_rotation_endorsement(malformed)
+
+
+def test_rotation_endorsement_rejects_whitespace_in_signature_hex():
+    endorsement = json.loads((CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text())
+    signature = endorsement["endorsement"]
+    endorsement["endorsement"] = f"{signature[:20]} {signature[20:]}"
+
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="invalid endorsement signature",
+    ):
+        pipelock_verify.verify_rotation_endorsement(endorsement)
+
+
+def test_rotation_endorsement_wraps_malformed_public_inputs():
+    endorsement: dict[Any, Any] = json.loads(
+        (CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text()
+    )
+    endorsement["unexpected"] = True
+    endorsement[1] = True
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="field names must be strings",
+    ):
+        pipelock_verify.verify_rotation_endorsement(endorsement)
+
+    source = (CONFORMANCE_DIR / "g1-rotation-endorsement.json").read_text()
+    malformed = source.replace("conformance-session", "conformance-\ud800session")
+    with pytest.raises(
+        pipelock_verify.InvalidReceiptError,
+        match="unmarshal rotation endorsement",
+    ):
+        pipelock_verify.verify_rotation_endorsement(malformed)
+
+
+def test_rotation_chain_rejects_non_object_action_record(tmp_path, test_key_hex):
+    path = tmp_path / "malformed-action-record.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "action_record": ["not", "an", "object"],
+                "signature": f"ed25519:{'0' * 128}",
+                "signer_key": test_key_hex,
+            }
+        )
+    )
+    endorsement = pipelock_verify.load_rotation_endorsement(
+        CONFORMANCE_DIR / "g1-rotation-endorsement.json"
+    )
+
+    result = pipelock_verify.verify_chain(
+        path,
+        public_key_hex=test_key_hex,
+        session_id="conformance-session",
+        rotation_endorsements=[endorsement],
+    )
+
+    assert not result.valid
+    assert result.broken_at_seq == 0
+    assert "missing or invalid action_record" in (result.error or "")
 
 
 def test_v3_2_0_live_recorder_chain_verifies_with_pinned_key():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from ._canonical import (
 from ._common import InvalidReceiptError as InvalidReceiptError
 from ._common import _is_valid_rfc3339 as _is_valid_rfc3339
 from ._common import loads_no_duplicate_keys
+from ._rotation import RotationEndorsement, verify_rotation_endorsement
 
 # Wire format constants — keep in sync with internal/receipt/receipt.go.
 _RECEIPT_VERSION = 1
@@ -188,6 +190,9 @@ def verify(
 def verify_chain(
     jsonl_path: str | Path,
     public_key_hex: str | None = None,
+    *,
+    session_id: str = "proxy",
+    rotation_endorsements: Sequence[RotationEndorsement | dict[str, Any] | str | bytes] = (),
 ) -> ChainResult:
     """Verify a receipt chain from a flight recorder JSONL file.
 
@@ -198,6 +203,10 @@ def verify_chain(
             ``signer_key`` of the first receipt is taken as the expected
             key and every subsequent receipt must share it. This matches
             the Go ``VerifyChain`` signer-consistency check.
+        session_id: Signed recorder session expected by each endorsement.
+        rotation_endorsements: Old-key-signed successor authorizations for
+            the chain's rotation boundaries. Supplying endorsements requires ``public_key_hex``;
+            the pinned key remains the root of trust.
 
     Returns:
         A :class:`ChainResult`. On failure, ``broken_at_seq`` and ``error``
@@ -215,7 +224,19 @@ def verify_chain(
         # normal failure result instead of propagating a raw exception.
         return ChainResult(valid=False, error=f"parsing JSONL: {exc}")
 
-    return _verify_chain_list(receipts, public_key_hex)
+    try:
+        verified_endorsements = [
+            verify_rotation_endorsement(endorsement) for endorsement in rotation_endorsements
+        ]
+    except (InvalidReceiptError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return ChainResult(valid=False, error=str(exc))
+
+    return _verify_chain_list(
+        receipts,
+        public_key_hex,
+        session_id=session_id,
+        rotation_endorsements=verified_endorsements,
+    )
 
 
 # ---- internals ----
@@ -1014,6 +1035,9 @@ def _validate_session_control_state(
 def _verify_chain_list(
     receipts: list[dict[str, Any]],
     public_key_hex: str | None,
+    *,
+    session_id: str = "proxy",
+    rotation_endorsements: Sequence[RotationEndorsement] = (),
 ) -> ChainResult:
     if not receipts:
         return ChainResult(valid=True, receipt_count=0)
@@ -1041,23 +1065,85 @@ def _verify_chain_list(
                 ),
             )
 
+    action_records: list[dict[str, Any]] = []
+    for i, receipt in enumerate(receipts):
+        action_record = receipt.get("action_record")
+        if not isinstance(action_record, dict):
+            return ChainResult(
+                valid=False,
+                broken_at_seq=i,
+                error=f"seq {i}: missing or invalid action_record",
+            )
+        action_records.append(action_record)
+
+    if rotation_endorsements:
+        if public_key_hex is None or not public_key_hex.strip():
+            return ChainResult(
+                valid=False,
+                error="rotation endorsement verification requires at least one trusted root key",
+            )
+        if not session_id.strip():
+            return ChainResult(
+                valid=False,
+                error="rotation endorsement verification requires a recorder session ID",
+            )
+        first_boundary = next(
+            (
+                index
+                for index, action_record in enumerate(action_records[1:], start=1)
+                if action_record.get("key_transition") is not None
+            ),
+            len(receipts),
+        )
+        root_open_found = False
+        for index, action_record in enumerate(action_records):
+            open_payload = _session_control_open(action_record)
+            if open_payload is None:
+                continue
+            recorder_session = open_payload.get("recorder_session", "")
+            if recorder_session != session_id:
+                return ChainResult(
+                    valid=False,
+                    error=(
+                        f"signed recorder session {recorder_session!r} does not match "
+                        f"endorsement session {session_id!r}"
+                    ),
+                )
+            if index < first_boundary:
+                root_open_found = True
+        if not root_open_found:
+            return ChainResult(
+                valid=False,
+                error="root receipt segment has no signed session_open recorder binding",
+            )
+
     # When no key is pinned, lock to the first receipt's signer_key so an
     # attacker can't splice receipts from a second signer into the chain.
-    expected_key = public_key_hex or receipts[0].get("signer_key", "")
+    expected_key = str(public_key_hex or receipts[0].get("signer_key", "")).lower()
 
     prev_hash: str | None = None
+    prior_segment_seq: int | None = None
+    segment_start_index = 0
+    segment_base_seq = 0
     run_nonces: dict[str, str] = {}
     closed_runs: dict[str, bool] = {}
     active_run = ""
     active_open = ""
     segment_receipt_count = 0
+    used_endorsements: set[int] = set()
     for i, receipt in enumerate(receipts):
-        ar = receipt.get("action_record") or {}
+        ar = action_records[i]
         seq = ar.get("chain_seq", i)
         marker = ar.get("key_transition")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0 or seq > _UINT64_MAX:
+            return ChainResult(
+                valid=False,
+                broken_at_seq=i,
+                error=f"seq {i}: signature: chain_seq must be a uint64",
+            )
 
-        if marker is not None:
-            if i == 0:
+        if i == 0:
+            if marker is not None:
                 return ChainResult(
                     valid=False,
                     broken_at_seq=seq,
@@ -1070,15 +1156,92 @@ def _verify_chain_list(
                 return ChainResult(
                     valid=False,
                     broken_at_seq=seq,
+                    error=f"seq {seq}: root receipt segment must start at chain_seq 0",
+                )
+            segment_base_seq = 0
+        elif marker is not None:
+            if seq != 0:
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
                     error=f"seq {seq}: key_transition marker on a non-genesis receipt (seq != 0)",
                 )
+            if not isinstance(marker, dict):
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
+                    error=f"seq {seq}: key_transition is not an object",
+                )
+            if prev_hash is None or marker.get("prior_chain_hash") != prev_hash:
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
+                    error=(
+                        f"seq {seq}: key_transition prior_chain_hash does not match "
+                        "actual prior tail hash"
+                    ),
+                )
+            if ar.get("chain_prev_hash") != prev_hash:
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
+                    error=(
+                        f"seq {seq}: segment-genesis chain_prev_hash does not match prior tail hash"
+                    ),
+                )
+            if marker.get("prior_signer_key") != expected_key:
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
+                    error=(
+                        f"seq {seq}: key_transition prior_signer_key does not match "
+                        "prior segment key"
+                    ),
+                )
+            if marker.get("prior_chain_seq") != prior_segment_seq:
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
+                    error=(
+                        f"seq {seq}: key_transition prior_chain_seq does not match "
+                        "prior segment final seq"
+                    ),
+                )
+            successor = str(receipt.get("signer_key", "")).lower()
+            prior_ar = action_records[i - 1]
+            matches = [
+                endorsement_index
+                for endorsement_index, endorsement in enumerate(rotation_endorsements)
+                if endorsement_index not in used_endorsements
+                and endorsement.session_id == session_id
+                and endorsement.prior_signer_key == expected_key
+                and endorsement.prior_final_seq == prior_ar.get("chain_seq")
+                and endorsement.prior_tail_hash == prev_hash
+                and endorsement.new_signer_key == successor
+            ]
+            if len(matches) > 1:
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
+                    error="multiple rotation endorsements match one receipt boundary",
+                )
+            if matches:
+                used_endorsements.add(matches[0])
+            if not matches:
+                return ChainResult(
+                    valid=False,
+                    broken_at_seq=seq,
+                    error="rotation endorsement does not match receipt boundary",
+                )
+            expected_key = successor
+            segment_start_index = i
+            segment_base_seq = 0
+            segment_receipt_count = 0
+        elif seq == 0:
             return ChainResult(
                 valid=False,
                 broken_at_seq=seq,
-                error=(
-                    f"seq {seq}: key_transition rotation verification is not implemented "
-                    "by this Python verifier"
-                ),
+                error=f"seq {seq}: unexpected seq 0 without a key_transition boundary",
             )
 
         result = _verify_receipt_dict(receipt, expected_key)
@@ -1089,11 +1252,12 @@ def _verify_chain_list(
                 error=f"seq {seq}: signature: {result.error}",
             )
 
-        if seq != i:
+        expected_seq = segment_base_seq + (i - segment_start_index)
+        if seq != expected_seq:
             return ChainResult(
                 valid=False,
                 broken_at_seq=seq,
-                error=f"seq gap: expected {i}, got {seq}",
+                error=f"seq gap: expected {expected_seq}, got {seq}",
             )
 
         actual_prev = ar.get("chain_prev_hash", "")
@@ -1124,7 +1288,7 @@ def _verify_chain_list(
                     ar,
                     open_payload,
                     prev_hash,
-                    receipts[i - 1].get("action_record", {}).get("chain_seq", i - 1),
+                    action_records[i - 1].get("chain_seq", i - 1),
                 )
                 if restart_error is not None:
                     return ChainResult(
@@ -1157,10 +1321,17 @@ def _verify_chain_list(
             )
 
         prev_hash = _compute_receipt_hash(receipt)
+        prior_segment_seq = seq
         segment_receipt_count += 1
 
-    first_ar = receipts[0].get("action_record") or {}
-    last_ar = receipts[-1].get("action_record") or {}
+    if len(used_endorsements) != len(rotation_endorsements):
+        return ChainResult(
+            valid=False,
+            error="unused rotation endorsement does not match a required boundary",
+        )
+
+    first_ar = action_records[0]
+    last_ar = action_records[-1]
     return ChainResult(
         valid=True,
         receipt_count=len(receipts),
