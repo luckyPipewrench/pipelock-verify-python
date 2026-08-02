@@ -8,6 +8,10 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: pr-review-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     # Restrict to the repository owner account. The review runner is checked
@@ -44,6 +48,9 @@ jobs:
       - name: Install dependencies
         run: pip install --require-hashes -r .github/requirements-pr-review.txt
 
+      - name: Test trusted review runner
+        run: python -m unittest tests/test_pr_review_routing.py
+
       - name: Determine review mode
         id: mode
         env:
@@ -59,10 +66,15 @@ jobs:
       - name: Run PR review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           REVIEW_MODE: ${{ steps.mode.outputs.mode }}
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
-          PR_REVIEW_MODEL_FAST: gpt-5.4-mini
-          PR_REVIEW_MODEL_DEEP: gpt-5.5
+          # Empty/unset repository variables deliberately fall back to the
+          # Python defaults in scripts/pr-review.py. Keep defaults there so
+          # manual and workflow runs cannot drift.
+          PR_REVIEW_MODEL_FAST: ${{ vars.PR_REVIEW_MODEL_FAST }}
+          PR_REVIEW_MODEL_DEEP: ${{ vars.PR_REVIEW_MODEL_DEEP }}
         run: python scripts/pr-review.py

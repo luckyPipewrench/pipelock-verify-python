@@ -5,8 +5,8 @@
 """AI-powered PR review for the pipelock-verify Python package.
 
 Triggered by /review comments on PRs. Supports multiple review modes:
-  /review       - Security and correctness review (smaller model, default)
-  /review deep  - Deeper review (larger model)
+  /review       - Security and correctness review (default model)
+  /review deep  - Deeper review (higher-capacity model)
   /review tests - Test coverage and boundary analysis
   /review docs  - Documentation accuracy check
 
@@ -21,12 +21,14 @@ LLM configuration (one of):
   OPENAI_API_KEY                       - Direct OpenAI API
 
 Model selection:
-  PR_REVIEW_MODEL_FAST  - Model for default/tests/docs (default: gpt-5.4-mini)
-  PR_REVIEW_MODEL_DEEP  - Model for /review deep (default: gpt-5.5)
+  PR_REVIEW_MODEL_FAST  - Optional model override for default/tests/docs
+                          (default: gpt-5.6-luna)
+  PR_REVIEW_MODEL_DEEP  - Optional model override for /review deep
+                          (default: gpt-5.6-terra)
 
 The PR_REVIEW_MODEL_FAST env var keeps its name for backwards compatibility
-with any existing repo-secrets overrides; the user-facing /review fast
-alias was dropped 2026-04-23 because the default mode is fast enough.
+with existing repository-variable overrides; the user-facing /review fast
+alias was dropped 2026-04-23 because the default mode is sufficient.
 """
 
 import json
@@ -38,10 +40,13 @@ import requests
 # --- Constants ---
 
 MAX_DIFF_CHARS = 100_000
-DEFAULT_MODEL_FAST = "gpt-5.4-mini"
-DEFAULT_MODEL_DEEP = "gpt-5.5"
+# These are the sole default model definitions. GitHub Actions may supply
+# optional repository-variable overrides, but an unset or empty override must
+# fall back here so workflow configuration cannot drift from local behavior.
+DEFAULT_MODEL_FAST = "gpt-5.6-luna"
+DEFAULT_MODEL_DEEP = "gpt-5.6-terra"
 DEFAULT_TEMPERATURE = 0.2
-DEFAULT_MAX_COMPLETION_TOKENS = 4096
+DEFAULT_MAX_COMPLETION_TOKENS = 8192
 DEEP_MAX_COMPLETION_TOKENS = 25000
 DEFAULT_LLM_TIMEOUT_SECONDS = 120
 DEEP_LLM_TIMEOUT_SECONDS = 300
@@ -181,6 +186,13 @@ def build_llm_payload(
     return payload
 
 
+def model_for_mode(mode: str) -> str:
+    """Return the configured model for a review mode, with Python defaults."""
+    if mode == "deep":
+        return os.environ.get("PR_REVIEW_MODEL_DEEP") or DEFAULT_MODEL_DEEP
+    return os.environ.get("PR_REVIEW_MODEL_FAST") or DEFAULT_MODEL_FAST
+
+
 def summarize_usage(data: dict) -> str:
     """Return compact token usage details for operator-visible errors."""
     usage = data.get("usage")
@@ -200,11 +212,11 @@ def summarize_usage(data: dict) -> str:
 def extract_chat_content(data: dict) -> str:
     """Extract visible text from a chat-completions response."""
     choices = data.get("choices", [])
-    if not choices:
-        raise LLMReviewError("LLM returned no choices. Raw response: " + json.dumps(data)[:500])
+    if not isinstance(choices, list) or not choices:
+        raise LLMReviewError("LLM returned no choices.")
 
-    choice = choices[0]
-    message = choice.get("message", {})
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
     content = message.get("content", "")
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
@@ -229,10 +241,7 @@ def call_llm(diff: str, mode: str, system_prompt: str) -> str:
     litellm_key = os.environ.get("LITELLM_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
 
-    if mode == "deep":
-        model = os.environ.get("PR_REVIEW_MODEL_DEEP") or DEFAULT_MODEL_DEEP
-    else:
-        model = os.environ.get("PR_REVIEW_MODEL_FAST") or DEFAULT_MODEL_FAST
+    model = model_for_mode(mode)
 
     if litellm_url and litellm_key:
         api_url = litellm_url.rstrip("/") + "/chat/completions"
@@ -264,13 +273,13 @@ def call_llm(diff: str, mode: str, system_prompt: str) -> str:
     timeout = DEEP_LLM_TIMEOUT_SECONDS if is_deep else DEFAULT_LLM_TIMEOUT_SECONDS
     resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
     if resp.status_code != 200:
-        body = resp.text[:500]
-        raise LLMReviewError(
-            f"LLM API returned {resp.status_code}.\n\n"
-            f"**Model:** `{model}`\n\n"
-            f"**Response:**\n```\n{body}\n```"
-        )
-    data = resp.json()
+        raise LLMReviewError(f"LLM API returned {resp.status_code} for model `{model}`.")
+    try:
+        data = resp.json()
+    except (json.JSONDecodeError, ValueError) as error:
+        raise LLMReviewError("LLM returned invalid JSON.") from error
+    if not isinstance(data, dict):
+        raise LLMReviewError("LLM returned a non-object JSON response.")
     return extract_chat_content(data)
 
 
@@ -328,9 +337,7 @@ def main() -> None:
         post_comment(repo, pr_number, gh_token, f"**AI Review Error:** {e}")
         sys.exit(1)
 
-    model_name = os.environ.get(
-        "PR_REVIEW_MODEL_DEEP" if mode == "deep" else "PR_REVIEW_MODEL_FAST"
-    ) or (DEFAULT_MODEL_DEEP if mode == "deep" else DEFAULT_MODEL_FAST)
+    model_name = model_for_mode(mode)
 
     mode_labels = {
         "default": "security",
