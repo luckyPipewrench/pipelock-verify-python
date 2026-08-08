@@ -40,7 +40,7 @@ class PRReviewRoutingTests(unittest.TestCase):
             self.assertEqual(module.model_for_mode("docs"), "gpt-5.6-luna")
             self.assertEqual(module.model_for_mode("deep"), "gpt-5.6-terra")
             self.assertEqual(module.FAST_REASONING_EFFORT, "low")
-            self.assertEqual(module.DEEP_REASONING_EFFORT, "medium")
+            self.assertEqual(module.DEEP_REASONING_EFFORT, "xhigh")
 
     def test_gpt_5_6_payloads_pin_the_requested_reasoning_effort(self):
         module = load_pr_review_module()
@@ -56,13 +56,15 @@ class PRReviewRoutingTests(unittest.TestCase):
             "system prompt",
             "diff",
             reasoning_effort=module.DEEP_REASONING_EFFORT,
+            max_completion_tokens=module.DEEP_MAX_COMPLETION_TOKENS,
         )
 
         self.assertEqual(ordinary_payload["model"], "gpt-5.6-luna")
         self.assertEqual(ordinary_payload["reasoning_effort"], "low")
         self.assertEqual(ordinary_payload["max_completion_tokens"], 8192)
         self.assertEqual(deep_payload["model"], "gpt-5.6-terra")
-        self.assertEqual(deep_payload["reasoning_effort"], "medium")
+        self.assertEqual(deep_payload["reasoning_effort"], "xhigh")
+        self.assertEqual(deep_payload["max_completion_tokens"], 64000)
 
     def test_model_repository_variable_overrides(self):
         module = load_pr_review_module()
