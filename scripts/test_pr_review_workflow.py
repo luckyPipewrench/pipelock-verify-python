@@ -14,7 +14,8 @@ MAX_WORKFLOW_BYTES = 65536
 # Upgrade trusted approvals in three stages: expand, migrate, then contract.
 # Both bootstrap and trusted validation must pass each stage before merging.
 APPROVED_REVIEWER_SHAS = ("3e8534e0dd621c62879238cc01d56f7e58e9d096",)
-EXPECTED_CALLERS = ("""name: AI PR Review
+EXPECTED_CALLERS = (
+    """name: AI PR Review
 
 on:
   issue_comment:
@@ -46,8 +47,10 @@ jobs:
     secrets:
       review_token: ${{ secrets.GITHUB_TOKEN }}
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-""",)
-EXPECTED_CONTRACTS = (r"""name: Review caller contract
+""",
+)
+EXPECTED_CONTRACTS = (
+    r"""name: Review caller contract
 
 on:
   pull_request:
@@ -157,7 +160,9 @@ jobs:
           .review-test-venv/bin/python -m unittest
           scripts.pr_review_test.WorkflowPackagingTest
           scripts.pr_review_test.FailureDirectionTest.test_review_job_timeout_exceeds_the_wall_clock_with_finalization_margin
-""",)
+""",
+)
+
 
 def read_workflow(path):
     """Read bounded UTF-8 data without following any path-component symlink."""
@@ -172,8 +177,7 @@ def read_workflow(path):
             child = os.open(part, directory_flags, dir_fd=directory)
             os.close(directory)
             directory = child
-        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                     dir_fd=directory)
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_WORKFLOW_BYTES:
@@ -194,7 +198,8 @@ def validate_caller(path):
     text = read_workflow(path)
     pins = re.findall(
         r"(?:pr-review-reusable\.yaml@|reviewer_sha: )([0-9a-f]{40})$",
-        text, re.MULTILINE,
+        text,
+        re.MULTILINE,
     )
     if len(pins) != 2 or pins[0] != pins[1]:
         raise ValueError("both reviewer references must be matching full SHAs")
@@ -271,32 +276,47 @@ class WorkflowInputTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 read_workflow(path.parent / ".." / "caller.yaml")
 
-
     def test_exact_contract_and_caller_changes_are_rejected(self):
         caller = EXPECTED_CALLERS[0].replace("REVIEWER_SHA", APPROVED_REVIEWER_SHAS[0])
         contract = EXPECTED_CONTRACTS[0]
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "workflow.yaml"
             for expected, check, mutations in [
-                (caller, validate_caller, [
-                    caller.replace("contents: read", "contents: write"),
-                    caller + "# unapproved caller comment\n",
-                    caller.replace("  issue_comment:", "  issue_comment:\n\n"),
-                    caller.replace(APPROVED_REVIEWER_SHAS[0], "main"),
-                    caller.replace(APPROVED_REVIEWER_SHAS[0], "a" * 40, 1),
-                    caller.replace(APPROVED_REVIEWER_SHAS[0], "a" * 40),
-                    caller.replace(APPROVED_REVIEWER_SHAS[0], "a" * 39),
-                ]),
-                (contract, validate_contract, [
-                    contract.replace("contents: read", "contents: write"),
-                    contract.replace("module.validate_contract(", "module.skip_contract("),
-                    contract.replace("--require-hashes", "--no-deps"),
-                    contract.replace("WorkflowPackagingTest", "MissingProtectionTest"),
-                    contract.replace("ref: ${{ github.sha }}", "ref: ${{ github.event.pull_request.head.sha }}"),
-                    contract.replace("          scripts.pr_review_test.FailureDirectionTest", "          # retained\n          scripts.pr_review_test.FailureDirectionTest"),
-                    contract.replace("ref: ${{ steps.validate.outputs.reviewer_sha }}", "ref: main"),
-                    contract + "\n",
-                ]),
+                (
+                    caller,
+                    validate_caller,
+                    [
+                        caller.replace("contents: read", "contents: write"),
+                        caller + "# unapproved caller comment\n",
+                        caller.replace("  issue_comment:", "  issue_comment:\n\n"),
+                        caller.replace(APPROVED_REVIEWER_SHAS[0], "main"),
+                        caller.replace(APPROVED_REVIEWER_SHAS[0], "a" * 40, 1),
+                        caller.replace(APPROVED_REVIEWER_SHAS[0], "a" * 40),
+                        caller.replace(APPROVED_REVIEWER_SHAS[0], "a" * 39),
+                    ],
+                ),
+                (
+                    contract,
+                    validate_contract,
+                    [
+                        contract.replace("contents: read", "contents: write"),
+                        contract.replace("module.validate_contract(", "module.skip_contract("),
+                        contract.replace("--require-hashes", "--no-deps"),
+                        contract.replace("WorkflowPackagingTest", "MissingProtectionTest"),
+                        contract.replace(
+                            "ref: ${{ github.sha }}",
+                            "ref: ${{ github.event.pull_request.head.sha }}",
+                        ),
+                        contract.replace(
+                            "          scripts.pr_review_test.FailureDirectionTest",
+                            "          # retained\n          scripts.pr_review_test.FailureDirectionTest",
+                        ),
+                        contract.replace(
+                            "ref: ${{ steps.validate.outputs.reviewer_sha }}", "ref: main"
+                        ),
+                        contract + "\n",
+                    ],
+                ),
             ]:
                 path.write_text(expected, encoding="utf-8")
                 check(path)
@@ -324,7 +344,9 @@ class WorkflowInputTest(unittest.TestCase):
                 ((new,), old, False),
             ]:
                 with self.subTest(approved=approved, proposed=proposed):
-                    caller.write_text(EXPECTED_CALLERS[0].replace("REVIEWER_SHA", proposed), encoding="utf-8")
+                    caller.write_text(
+                        EXPECTED_CALLERS[0].replace("REVIEWER_SHA", proposed), encoding="utf-8"
+                    )
                     with mock.patch.dict(globals(), APPROVED_REVIEWER_SHAS=approved):
                         if accepted:
                             self.assertEqual(validate_caller(caller), proposed)
@@ -343,12 +365,18 @@ class WorkflowInputTest(unittest.TestCase):
             ]:
                 new = old.replace("name:", "# approved shape revision\nname:", 1)
                 for approved, proposed, accepted in [
-                    ((old,), old, True), ((old,), new, False),
-                    ((old, new), old, True), ((old, new), new, True),
-                    ((new,), new, True), ((new,), old, False),
+                    ((old,), old, True),
+                    ((old,), new, False),
+                    ((old, new), old, True),
+                    ((old, new), new, True),
+                    ((new,), new, True),
+                    ((new,), old, False),
                 ]:
                     with self.subTest(key=key, accepted=accepted):
-                        path.write_text(proposed.replace("REVIEWER_SHA", APPROVED_REVIEWER_SHAS[0]), encoding="utf-8")
+                        path.write_text(
+                            proposed.replace("REVIEWER_SHA", APPROVED_REVIEWER_SHAS[0]),
+                            encoding="utf-8",
+                        )
                         with mock.patch.dict(globals(), {key: approved}):
                             if accepted:
                                 check(path)
