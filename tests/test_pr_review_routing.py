@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import re
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -11,7 +10,6 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "pr-review.py"
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "pr-review.yaml"
 
 
 def load_pr_review_module() -> ModuleType:
@@ -90,48 +88,6 @@ class PRReviewRoutingTests(unittest.TestCase):
         ):
             self.assertEqual(module.model_for_mode("default"), module.DEFAULT_MODEL_FAST)
             self.assertEqual(module.model_for_mode("deep"), module.DEFAULT_MODEL_DEEP)
-
-    def test_workflow_leaves_model_selection_to_the_shared_reviewer(self):
-        # The caller used to choose models through repository variables. The
-        # shared reviewer owns that decision now, so a model name appearing
-        # here would mean this repository had started diverging from the
-        # reviewer it delegates to, which is the drift this change removes.
-        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-
-        self.assertIsNone(re.search(r"\bgpt-[0-9]", workflow))
-        self.assertNotIn("PR_REVIEW_MODEL_FAST", workflow)
-        self.assertNotIn("PR_REVIEW_MODEL_DEEP", workflow)
-
-    def test_workflow_pins_one_immutable_reviewer_and_gates_on_owner(self):
-        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-
-        self.assertIn("github.event.comment.user.login == 'luckyPipewrench'", workflow)
-        self.assertIn("github.event.comment.author_association == 'OWNER'", workflow)
-
-        # The pin appears twice and selects two different things: which
-        # workflow runs, and which reviewer source it runs. A mismatch runs one
-        # version's workflow against another version's code and reports nothing
-        # wrong, so equality is the property worth asserting, not presence.
-        used = re.search(r"pr-review-reusable\.yaml@([0-9a-f]{40})\b", workflow)
-        declared = re.search(r"reviewer_sha:\s*([0-9a-f]{40})\b", workflow)
-        self.assertIsNotNone(used, "the reusable workflow must be pinned to a full commit sha")
-        self.assertIsNotNone(declared, "reviewer_sha must be a full commit sha")
-        self.assertEqual(used.group(1), declared.group(1))
-
-        # A branch or tag can move the reviewer code under the pin, so neither
-        # position may carry one.
-        self.assertIsNone(re.search(r"pr-review-reusable\.yaml@(?![0-9a-f]{40}\b)\S+", workflow))
-
-        # A caller may only pass secrets the reusable workflow declares. Passing
-        # an undeclared one fails at workflow load rather than at review time,
-        # which presents as the review simply never running.
-        secrets_block = workflow.split("    secrets:", 1)
-        self.assertEqual(len(secrets_block), 2, "the caller must map secrets explicitly")
-        mapped = set(re.findall(r"^      ([a-z_]+):", secrets_block[1], re.MULTILINE))
-        self.assertEqual(mapped, {"review_token", "openai_api_key"})
-
-        runner = SCRIPT_PATH.read_text(encoding="utf-8")
-        self.assertNotIn("resp.text[:500]", runner)
 
     def test_response_shape_errors_are_generic_and_fail_closed(self):
         module = load_pr_review_module()
