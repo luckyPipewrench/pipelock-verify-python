@@ -27,6 +27,11 @@ GO_REPO = "pipelock"
 GO_SOURCE_PATH = "internal/receipt/canonical.go"
 DEFAULT_REF = "main"
 
+# Signed nested structs the canonical projections embed verbatim but that are
+# declared outside canonical.go. Checked at the same resolved commit.
+SESSION_CONTROL_SOURCE_PATH = "internal/receipt/session_control.go"
+SESSION_CONTROL_STRUCTS: tuple[str, ...] = ("ReceiptGroupBinding",)
+
 GO_STRUCTS: tuple[str, ...] = (
     "actionRecordCanonicalV1",
     "taintSourceRefCanonicalV1",
@@ -96,6 +101,7 @@ def python_contract() -> dict[str, list[FieldSpec]]:
 
     from pipelock_verify._canonical import (
         _ACTION_RECORD_FIELDS,
+        _GROUP_BINDING_FIELDS,
         _KEY_TRANSITION_FIELDS,
         _REDACTION_FIELDS,
         _SESSION_CLOSE_FIELDS,
@@ -116,6 +122,7 @@ def python_contract() -> dict[str, list[FieldSpec]]:
         "sessionCloseCanonicalV1": _strip_nested_kind(_SESSION_CLOSE_FIELDS),
         "redactionSummaryCanonicalV1": _strip_nested_kind(_REDACTION_FIELDS),
         "shieldSummaryCanonicalV1": _strip_nested_kind(_SHIELD_FIELDS),
+        "ReceiptGroupBinding": _strip_nested_kind(_GROUP_BINDING_FIELDS),
     }
 
 
@@ -155,16 +162,22 @@ def resolve_ref(ref: str, *, timeout: float) -> str:
     return sha
 
 
+def fetch_go_file(path: str, resolved_sha: str, *, timeout: float) -> str:
+    """Fetch one Go source file at an already resolved commit."""
+
+    url = f"https://raw.githubusercontent.com/{GO_OWNER}/{GO_REPO}/{resolved_sha}/{path}"
+    raw = _request(url, timeout=timeout)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ContractFetchError(f"Go source {url} is not valid UTF-8") from exc
+
+
 def fetch_go_source(ref: str, *, timeout: float) -> tuple[str, str]:
     """Fetch canonical.go at a concrete commit and return ``(source, sha)``."""
 
     resolved_sha = resolve_ref(ref, timeout=timeout)
-    url = f"https://raw.githubusercontent.com/{GO_OWNER}/{GO_REPO}/{resolved_sha}/{GO_SOURCE_PATH}"
-    raw = _request(url, timeout=timeout)
-    try:
-        return raw.decode("utf-8"), resolved_sha
-    except UnicodeDecodeError as exc:
-        raise ContractFetchError(f"Go source {url} is not valid UTF-8") from exc
+    return fetch_go_file(GO_SOURCE_PATH, resolved_sha, timeout=timeout), resolved_sha
 
 
 def read_source_arg(source: str) -> tuple[str, str]:
@@ -287,15 +300,35 @@ def check_source(
     expected_contract: Mapping[str, Sequence[FieldSpec]] | None = None,
     struct_names: Iterable[str] = GO_STRUCTS,
 ) -> None:
+    check_sources(
+        [(source, struct_names)],
+        source_label=source_label,
+        expected_contract=expected_contract,
+    )
+
+
+def check_sources(
+    sources: Sequence[tuple[str, Iterable[str]]],
+    *,
+    source_label: str,
+    expected_contract: Mapping[str, Sequence[FieldSpec]] | None = None,
+) -> None:
+    """Merge the structs parsed from each ``(source, struct_names)`` and diff once."""
+
     expected = expected_contract if expected_contract is not None else python_contract()
-    go_contract = extract_go_contract(source, struct_names=struct_names)
+    go_contract: dict[str, list[FieldSpec]] = {}
+    for source, struct_names in sources:
+        for struct_name, fields in extract_go_contract(source, struct_names=struct_names).items():
+            if struct_name in go_contract:
+                raise ContractParseError(f"Go struct {struct_name} parsed from two sources")
+            go_contract[struct_name] = fields
     diffs = diff_contracts(go_contract, expected)
     if diffs:
         details = "\n".join(diffs)
         raise ContractDriftError(
             "Go canonical v1 signing projection drifted from pipelock-verify.\n"
             f"Go source: {source_label}\n"
-            f"Inspect {GO_SOURCE_PATH}; update pipelock_verify/_canonical.py and the "
+            f"Inspect {GO_SOURCE_PATH} and {SESSION_CONTROL_SOURCE_PATH}; update pipelock_verify/_canonical.py and the "
             "checked-in mirror tests together.\n\n"
             f"{details}"
         )
@@ -321,6 +354,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Read Go source from this file path instead of fetching. Use '-' for stdin.",
     )
     parser.add_argument(
+        "--session-control-source",
+        help=(
+            "Read Go session_control.go from this file path. Required with --source "
+            "so local mode checks the same signed structs as fetch mode."
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=20.0,
@@ -332,15 +372,28 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
+        if bool(args.source) != bool(args.session_control_source):
+            raise ContractFetchError("--source and --session-control-source must be given together")
         if args.source:
-            source, source_label = read_source_arg(args.source)
+            if args.source == "-" and args.session_control_source == "-":
+                raise ContractFetchError("only one Go source may be read from stdin")
+            source, canonical_label = read_source_arg(args.source)
+            session_control, control_label = read_source_arg(args.session_control_source)
+            source_label = f"{canonical_label} + {control_label}"
         else:
             source, resolved_sha = fetch_go_source(args.ref, timeout=args.timeout)
+            session_control = fetch_go_file(
+                SESSION_CONTROL_SOURCE_PATH, resolved_sha, timeout=args.timeout
+            )
             source_label = (
-                f"github.com/{GO_OWNER}/{GO_REPO}@{resolved_sha}:{GO_SOURCE_PATH} "
+                f"github.com/{GO_OWNER}/{GO_REPO}@{resolved_sha}:"
+                f"{GO_SOURCE_PATH} + {SESSION_CONTROL_SOURCE_PATH} "
                 f"(requested ref {args.ref!r})"
             )
-        check_source(source, source_label=source_label)
+        check_sources(
+            [(source, GO_STRUCTS), (session_control, SESSION_CONTROL_STRUCTS)],
+            source_label=source_label,
+        )
     except ContractCheckError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1

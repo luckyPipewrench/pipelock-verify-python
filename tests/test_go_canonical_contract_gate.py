@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -136,3 +137,139 @@ def test_gate_rejects_a_newly_added_go_canonical_projection():
         _check_test_source(changed)
 
     assert "brandNewThingCanonicalV1" in str(excinfo.value)
+
+
+# --- ReceiptGroupBinding: signed nested struct declared in session_control.go ---
+
+check_sources = contract_gate.check_sources
+BINDING_STRUCT = "ReceiptGroupBinding"
+
+BASE_SESSION_CONTROL_SOURCE = """
+package receipt
+
+type SessionOpen struct {
+    GroupBinding *ReceiptGroupBinding `json:"group_binding,omitempty"`
+}
+
+type ReceiptGroupBinding struct {
+    GroupID    string `json:"group_id"`
+    ShardIndex int    `json:"shard_index"`
+    SessionID  string `json:"session_id"`
+}
+"""
+
+TWO_SOURCE_EXPECTED: dict[str, list[FieldSpec]] = {
+    **EXPECTED_CONTRACT,
+    BINDING_STRUCT: [
+        FieldSpec("group_id", False),
+        FieldSpec("shard_index", False),
+        FieldSpec("session_id", False),
+    ],
+}
+
+
+def _check_two_sources(session_control: str) -> None:
+    check_sources(
+        [(BASE_GO_SOURCE, (STRUCT_NAME,)), (session_control, (BINDING_STRUCT,))],
+        source_label="test canonical.go + session_control.go",
+        expected_contract=TWO_SOURCE_EXPECTED,
+    )
+
+
+def test_two_source_gate_passes_on_matching_binding():
+    _check_two_sources(BASE_SESSION_CONTROL_SOURCE)
+
+
+def test_two_source_gate_fails_when_go_adds_binding_field():
+    changed = BASE_SESSION_CONTROL_SOURCE.replace(
+        '    SessionID  string `json:"session_id"`\n',
+        '    SessionID  string `json:"session_id"`\n    Extra string `json:"extra"`\n',
+    )
+    with pytest.raises(ContractDriftError) as excinfo:
+        _check_two_sources(changed)
+    assert "+04 extra omitempty=false" in str(excinfo.value)
+
+
+def test_two_source_gate_fails_when_go_removes_binding_field():
+    changed = BASE_SESSION_CONTROL_SOURCE.replace(
+        '    ShardIndex int    `json:"shard_index"`\n', ""
+    )
+    with pytest.raises(ContractDriftError) as excinfo:
+        _check_two_sources(changed)
+    assert "shard_index" in str(excinfo.value)
+
+
+def test_two_source_gate_fails_when_go_reorders_binding_fields():
+    changed = BASE_SESSION_CONTROL_SOURCE.replace(
+        '    GroupID    string `json:"group_id"`\n    ShardIndex int    `json:"shard_index"`\n',
+        '    ShardIndex int    `json:"shard_index"`\n    GroupID    string `json:"group_id"`\n',
+    )
+    with pytest.raises(ContractDriftError):
+        _check_two_sources(changed)
+
+
+def test_two_source_gate_fails_when_binding_becomes_omitempty():
+    changed = BASE_SESSION_CONTROL_SOURCE.replace('json:"group_id"', 'json:"group_id,omitempty"')
+    with pytest.raises(ContractDriftError):
+        _check_two_sources(changed)
+
+
+def test_two_source_gate_fails_closed_when_binding_struct_missing():
+    with pytest.raises(ContractParseError, match="ReceiptGroupBinding"):
+        _check_two_sources("package receipt\n")
+
+
+def test_python_contract_includes_group_binding():
+    assert BINDING_STRUCT in contract_gate.python_contract()
+
+
+def test_fetch_mode_reads_both_sources_at_one_resolved_sha(monkeypatch, capsys):
+    sha = "a" * 40
+    urls: list[str] = []
+
+    def fake_request(url: str, *, timeout: float) -> bytes:
+        urls.append(url)
+        if url.startswith("https://api.github.com/"):
+            return json.dumps({"sha": sha}).encode()
+        raise ContractFetchError(f"offline test refused {url}")
+
+    monkeypatch.setattr(contract_gate, "_request", fake_request)
+    assert contract_gate.main(["--ref", "main"]) == 1
+    assert "offline test refused" in capsys.readouterr().err
+    assert urls[1].endswith(f"/{sha}/internal/receipt/canonical.go")
+
+
+def test_fetch_mode_refuses_when_session_control_fetch_fails(monkeypatch, capsys):
+    sha = "b" * 40
+
+    def fake_request(url: str, *, timeout: float) -> bytes:
+        if url.startswith("https://api.github.com/"):
+            return json.dumps({"sha": sha}).encode()
+        if url.endswith("canonical.go"):
+            return b"package receipt\n"
+        raise ContractFetchError(f"offline test refused {url}")
+
+    monkeypatch.setattr(contract_gate, "_request", fake_request)
+    assert contract_gate.main(["--ref", "main"]) == 1
+    err = capsys.readouterr().err
+    assert f"/{sha}/internal/receipt/session_control.go" in err
+
+
+def test_local_mode_requires_both_sources(tmp_path, capsys):
+    canonical = tmp_path / "canonical.go"
+    canonical.write_text(BASE_GO_SOURCE)
+    assert contract_gate.main(["--source", str(canonical)]) == 1
+    assert "must be given together" in capsys.readouterr().err
+    control = tmp_path / "session_control.go"
+    control.write_text(BASE_SESSION_CONTROL_SOURCE)
+    assert contract_gate.main(["--session-control-source", str(control)]) == 1
+
+
+def test_local_mode_refuses_missing_session_control_file(tmp_path, capsys):
+    canonical = tmp_path / "canonical.go"
+    canonical.write_text(BASE_GO_SOURCE)
+    rc = contract_gate.main(
+        ["--source", str(canonical), "--session-control-source", str(tmp_path / "nope.go")]
+    )
+    assert rc == 1
+    assert "failed to read Go source" in capsys.readouterr().err

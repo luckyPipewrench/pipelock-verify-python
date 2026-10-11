@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from ._canonical import (
     _ACTION_RECORD_FIELDS,
+    _GROUP_BINDING_FIELDS,
     _KEY_TRANSITION_FIELDS,
     _RECEIPT_FIELDS,
     _REDACTION_FIELDS,
@@ -77,6 +78,7 @@ _TAINT_SOURCE_FIELD_NAMES = frozenset(name for name, _, _ in _TAINT_SOURCE_FIELD
 _KEY_TRANSITION_FIELD_NAMES = frozenset(name for name, _, _ in _KEY_TRANSITION_FIELDS)
 _SESSION_CONTROL_FIELD_NAMES = frozenset(name for name, _, _ in _SESSION_CONTROL_FIELDS)
 _SESSION_OPEN_FIELD_NAMES = frozenset(name for name, _, _ in _SESSION_OPEN_FIELDS)
+_GROUP_BINDING_FIELD_NAMES = frozenset(name for name, _, _ in _GROUP_BINDING_FIELDS)
 _SESSION_HEARTBEAT_FIELD_NAMES = frozenset(name for name, _, _ in _SESSION_HEARTBEAT_FIELDS)
 _SESSION_CLOSE_FIELD_NAMES = frozenset(name for name, _, _ in _SESSION_CLOSE_FIELDS)
 
@@ -572,6 +574,35 @@ def _validate_session_payload_shape(
     return None
 
 
+def _validate_group_binding_shape(open_payload: dict[str, Any]) -> str | None:
+    # Go decodes a null or absent group_binding into a nil pointer: an
+    # ungrouped (legacy single-chain) session. A present binding is signed
+    # whole; group membership and completeness are not checked per chain.
+    binding = open_payload.get("group_binding")
+    if binding is None:
+        return None
+    if isinstance(binding, dict):
+        # A null typed field decodes to its Go zero value; see _canonical.
+        binding = {
+            k: v for k, v in binding.items() if v is not None or k not in _GROUP_BINDING_FIELD_NAMES
+        }
+    return _validate_session_payload_shape(
+        binding,
+        _GROUP_BINDING_FIELD_NAMES,
+        (
+            "group_id",
+            "session_id",
+            "open_manifest_sha256",
+            "signer_key",
+            "previous_group_id",
+            "previous_open_manifest_sha256",
+        ),
+        (),
+        "session_open group_binding",
+        int64_fields=("shard_index",),
+    )
+
+
 def _validate_session_control_shape(action_record: dict[str, Any]) -> str | None:
     if "session_control" not in action_record or action_record.get("session_control") is None:
         return None
@@ -593,7 +624,7 @@ def _validate_session_control_shape(action_record: dict[str, Any]) -> str | None
     if kind == "session_open":
         if present_payloads != ["open"]:
             return "session_open kind missing open payload"
-        return _validate_session_payload_shape(
+        if err := _validate_session_payload_shape(
             ctrl["open"],
             _SESSION_OPEN_FIELD_NAMES,
             (
@@ -614,7 +645,9 @@ def _validate_session_control_shape(action_record: dict[str, Any]) -> str | None
             ("chain_open_seq", "prior_chain_seq"),
             "session_open",
             int64_fields=("heartbeat_seconds",),
-        )
+        ):
+            return err
+        return _validate_group_binding_shape(ctrl["open"])
     if kind == "heartbeat":
         if present_payloads != ["heartbeat"]:
             return "heartbeat kind missing heartbeat payload"
