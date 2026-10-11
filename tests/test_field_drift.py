@@ -23,6 +23,7 @@ import pytest
 
 from pipelock_verify._canonical import (
     _ACTION_RECORD_FIELDS,
+    _GROUP_BINDING_FIELDS,
     _KEY_TRANSITION_FIELDS,
     _SESSION_CLOSE_FIELDS,
     _SESSION_CONTROL_FIELDS,
@@ -136,6 +137,18 @@ EXPECTED_SESSION_OPEN_CANONICAL_V1: list[tuple[str, bool, str | None]] = [
     ("posture_signer_key_id", True, None),
     ("containment_nonce", True, None),
     ("contained_uid", True, None),
+    ("group_binding", True, "group_binding"),
+]
+
+# Go internal/receipt/session_control.go ReceiptGroupBinding (not omitempty).
+EXPECTED_GROUP_BINDING_V1: list[tuple[str, bool, str | None]] = [
+    ("group_id", False, None),
+    ("shard_index", False, None),
+    ("session_id", False, None),
+    ("open_manifest_sha256", False, None),
+    ("signer_key", False, None),
+    ("previous_group_id", False, None),
+    ("previous_open_manifest_sha256", False, None),
 ]
 
 EXPECTED_SESSION_HEARTBEAT_CANONICAL_V1: list[tuple[str, bool, str | None]] = [
@@ -246,6 +259,7 @@ def test_nested_session_field_lists_match_canonical_go_projection():
     assert _KEY_TRANSITION_FIELDS == EXPECTED_KEY_TRANSITION_CANONICAL_V1, CANONICAL_GO_MESSAGE
     assert _SESSION_CONTROL_FIELDS == EXPECTED_SESSION_CONTROL_CANONICAL_V1, CANONICAL_GO_MESSAGE
     assert _SESSION_OPEN_FIELDS == EXPECTED_SESSION_OPEN_CANONICAL_V1, CANONICAL_GO_MESSAGE
+    assert _GROUP_BINDING_FIELDS == EXPECTED_GROUP_BINDING_V1, CANONICAL_GO_MESSAGE
     assert _SESSION_HEARTBEAT_FIELDS == EXPECTED_SESSION_HEARTBEAT_CANONICAL_V1, (
         CANONICAL_GO_MESSAGE
     )

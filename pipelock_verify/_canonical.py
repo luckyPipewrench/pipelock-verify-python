@@ -197,6 +197,19 @@ _SESSION_OPEN_FIELDS: list[tuple[str, bool, str | None]] = [
     ("posture_signer_key_id", True, None),
     ("containment_nonce", True, None),
     ("contained_uid", True, None),
+    ("group_binding", True, "group_binding"),
+]
+
+# ReceiptGroupBinding fields, Go struct order (receipt.ReceiptGroupBinding).
+# None are omitempty: a present binding always signs all seven fields.
+_GROUP_BINDING_FIELDS: list[tuple[str, bool, str | None]] = [
+    ("group_id", False, None),
+    ("shard_index", False, None),
+    ("session_id", False, None),
+    ("open_manifest_sha256", False, None),
+    ("signer_key", False, None),
+    ("previous_group_id", False, None),
+    ("previous_open_manifest_sha256", False, None),
 ]
 
 # SessionHeartbeat fields, Go struct order (receipt.sessionHeartbeatCanonicalV1).
@@ -231,6 +244,7 @@ _NESTED_OBJECT_FIELDS: dict[str, list[tuple[str, bool, str | None]]] = {
     "key_transition": _KEY_TRANSITION_FIELDS,
     "session_control": _SESSION_CONTROL_FIELDS,
     "session_open": _SESSION_OPEN_FIELDS,
+    "group_binding": _GROUP_BINDING_FIELDS,
     "session_heartbeat": _SESSION_HEARTBEAT_FIELDS,
     "session_close": _SESSION_CLOSE_FIELDS,
 }
@@ -252,6 +266,15 @@ _NESTED_REQUIRED_ZERO_VALUES: dict[str, dict[str, Any]] = {
         "signer_key_epoch": "",
         "heartbeat_seconds": 0,
         "chain_open_seq": 0,
+    },
+    "group_binding": {
+        "group_id": "",
+        "shard_index": 0,
+        "session_id": "",
+        "open_manifest_sha256": "",
+        "signer_key": "",
+        "previous_group_id": "",
+        "previous_open_manifest_sha256": "",
     },
     "session_heartbeat": {
         "run_nonce": "",
@@ -385,6 +408,11 @@ def _normalize_maps(value: Any) -> Any:
     return value
 
 
+# Nested kinds whose typed fields Go decodes from JSON null as zero values.
+# Limited to group_binding; legacy session fields keep their stricter refusal.
+_NULL_AS_ZERO_KINDS = frozenset({"group_binding"})
+
+
 def _order_object(
     obj: dict[str, Any],
     fields: list[tuple[str, bool, str | None]],
@@ -416,6 +444,10 @@ def _order_object(
             value = zero_values[name]
         else:
             value = obj[name]
+            if value is None and nested_kind in _NULL_AS_ZERO_KINDS:
+                # Go decodes null into a typed field as a no-op, keeping (and
+                # signing) the field's zero value.
+                value = _NESTED_REQUIRED_ZERO_VALUES[nested_kind][name]
         if nested == "raw_json":
             # RawMessage omitempty only drops nil/empty bytes. JSON input with
             # an explicit ext value, including null, false, 0, "", {}, or [],
