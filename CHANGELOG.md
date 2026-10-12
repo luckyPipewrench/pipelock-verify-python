@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- **The README states what a valid result does not prove.** It no longer says exit codes match `pipelock verify-receipt` or that the package mirrors the Go verifier without qualification. A valid chain is not proof that its end is present, and a valid shard is not proof that a parallel-chain group is complete.
+- **The README states what a valid result does not prove.** It no longer says exit codes match `pipelock verify-receipt` or that the package mirrors the Go verifier without qualification. A valid chain is not proof that its end is present, a valid shard is not proof that a parallel-chain group is complete, and entries other than ActionReceipt v1 in a recorder file are not checked.
 
 ## [0.4.0] - 2026-07-30
 
