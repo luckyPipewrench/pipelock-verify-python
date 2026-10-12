@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a previous group and recovery tails) still needs Pipelock's own group verifier.
   Receipts from single-chain runs verify as before.
 
+### Documentation
+
+- **The README states what a valid result does not prove.** It no longer says exit codes match `pipelock verify-receipt` or that the package mirrors the Go verifier without qualification. A valid chain is not proof that its end is present, and a valid shard is not proof that a parallel-chain group is complete.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added
