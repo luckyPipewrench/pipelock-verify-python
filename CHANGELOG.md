@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-12
+
+### Fixed
+
+- **Receipts from Pipelock parallel receipt chains now verify.** `verify()` and
+  `verify_chain()` accept the optional `group_binding` object that Pipelock signs
+  into `session_open` when `flight_recorder.receipt_chains` is greater than 1.
+  Before this release every shard of a grouped run failed with an unknown signed
+  field error. The binding is part of the signed projection in Go field order.
+  This is per-receipt and per-chain compatibility only: whole-group verification
+  (signed open and close manifests, shard membership, missing shards, the link to
+  a previous group and recovery tails) still needs Pipelock's own group verifier.
+  Receipts from single-chain runs verify as before.
+
+### Documentation
+
+- **The README states what a valid result does not prove.** It no longer says exit codes match `pipelock verify-receipt` or that the package mirrors the Go verifier without qualification. A valid chain is not proof that its end is present, a valid shard is not proof that a parallel-chain group is complete, and entries other than ActionReceipt v1 in a recorder file are not checked.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added

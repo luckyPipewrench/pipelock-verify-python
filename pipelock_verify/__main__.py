@@ -1,8 +1,9 @@
 """Command-line interface for ``python -m pipelock_verify``.
 
 Verifies a single receipt JSON file or a flight recorder JSONL chain.
-Exit code 0 on success, 1 on failure — same convention as the Go
-``pipelock verify-receipt`` command.
+Exit code 0 on success, 1 on failure. Pipelock releases that add end-of-chain
+proofs also exit 3 from ``pipelock verify-receipt`` for a valid chain whose end
+is not proven; this CLI has no such state.
 """
 
 from __future__ import annotations
